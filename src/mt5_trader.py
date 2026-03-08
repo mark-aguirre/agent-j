@@ -29,6 +29,7 @@ class MT5Trader:
         self.daily_trade_count = 0
         self.last_daily_reset = datetime.now()
         self.known_orders = set()  # Track known order tickets
+        self.order_snapshots = {}  # Track order details for change detection
     
     def connect(self) -> bool:
         """Initialize connection to MT5"""
@@ -66,8 +67,9 @@ class MT5Trader:
             if mt5.symbol_info(base_symbol):
                 return base_symbol
             
-            # Common broker suffixes
-            suffixes = ["m", ".m", "M", ".r", ".R", "_m", "-m", ".pro", ".raw", ""]
+            # Common broker suffixes - expanded list
+            suffixes = ["m", ".m", "M", ".r", ".R", "_m", "-m", ".pro", ".raw", 
+                       "c", ".c", "C", ".a", ".b", "_sb", "-sb", ""]
             
             for suffix in suffixes:
                 test_symbol = base_symbol + suffix
@@ -75,12 +77,27 @@ class MT5Trader:
                     logger.info(f"Symbol mapped: {base_symbol} -> {test_symbol}")
                     return test_symbol
             
-            # Try searching all symbols
+            # Try searching all symbols with fuzzy matching
             symbols = mt5.symbols_get()
             if symbols:
+                base_upper = base_symbol.upper()
+                
+                # First try: exact substring match
                 for sym in symbols:
-                    if base_symbol in sym.name.upper():
-                        logger.info(f"Symbol found: {base_symbol} -> {sym.name}")
+                    if base_upper == sym.name.upper():
+                        logger.info(f"Symbol found (exact): {base_symbol} -> {sym.name}")
+                        return sym.name
+                
+                # Second try: starts with base symbol
+                for sym in symbols:
+                    if sym.name.upper().startswith(base_upper):
+                        logger.info(f"Symbol found (prefix): {base_symbol} -> {sym.name}")
+                        return sym.name
+                
+                # Third try: contains base symbol
+                for sym in symbols:
+                    if base_upper in sym.name.upper():
+                        logger.info(f"Symbol found (contains): {base_symbol} -> {sym.name}")
                         return sym.name
             
             return None
@@ -183,14 +200,17 @@ class MT5Trader:
         symbol_info = mt5.symbol_info(symbol)
         spread = int((tick.ask - tick.bid) / symbol_info.point)
         
-        # Different spread limits for different instruments
-        if "BTC" in symbol or "ETH" in symbol or "XRP" in symbol:
+        # Determine max spread based on instrument type
+        symbol_upper = symbol.upper()
+        
+        if any(crypto in symbol_upper for crypto in ["BTC", "ETH", "XRP", "ADA", "SOL", "DOT", "BNB", "DOGE", "MATIC", "AVAX", "LINK"]):
             max_spread = self.config.max_spread_crypto
-        elif "XAU" in symbol or "GOLD" in symbol:
+        elif any(metal in symbol_upper for metal in ["XAU", "GOLD", "XAG", "SILVER"]):
             max_spread = self.config.max_spread_gold
-        elif "US30" in symbol or "NAS" in symbol or "SPX" in symbol:
+        elif any(index in symbol_upper for index in ["US30", "NAS", "SPX", "US100", "DJ30", "SP500"]):
             max_spread = self.config.max_spread_indices
         else:
+            # Default to forex spread for unknown symbols
             max_spread = self.config.max_spread_forex
         
         if spread > max_spread:
@@ -539,6 +559,124 @@ class MT5Trader:
         except Exception as e:
             logger.error(f"Error cancelling order {ticket}: {e}")
             return False
+    
+    def modify_order(self, ticket: int, entry: Optional[float] = None, 
+                     sl: Optional[float] = None, tp: Optional[float] = None) -> bool:
+        """Modify an existing position or pending order"""
+        try:
+            # First check if it's a position
+            positions = mt5.positions_get(ticket=ticket)
+            if positions:
+                pos = positions[0]
+                symbol_info = mt5.symbol_info(pos.symbol)
+                if not symbol_info:
+                    logger.error(f"Symbol {pos.symbol} not found")
+                    return False
+                
+                digits = symbol_info.digits
+                
+                # For positions, we can only modify SL and TP
+                new_sl = round(sl, digits) if sl is not None else pos.sl
+                new_tp = round(tp, digits) if tp is not None else pos.tp
+                
+                request = {
+                    "action": mt5.TRADE_ACTION_SLTP,
+                    "position": pos.ticket,
+                    "sl": new_sl,
+                    "tp": new_tp,
+                }
+                
+                result = mt5.order_send(request)
+                if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                    logger.info(f"✓ Position {ticket} modified: SL={new_sl}, TP={new_tp}")
+                    return True
+                else:
+                    error_msg = f"retcode={result.retcode}" if result else "No result"
+                    logger.error(f"Failed to modify position {ticket}: {error_msg}")
+                    return False
+            
+            # Check if it's a pending order
+            orders = mt5.orders_get(ticket=ticket)
+            if orders:
+                order = orders[0]
+                symbol_info = mt5.symbol_info(order.symbol)
+                if not symbol_info:
+                    logger.error(f"Symbol {order.symbol} not found")
+                    return False
+                
+                digits = symbol_info.digits
+                
+                # For pending orders, we can modify entry, SL, and TP
+                new_entry = round(entry, digits) if entry is not None else order.price_open
+                new_sl = round(sl, digits) if sl is not None else order.sl
+                new_tp = round(tp, digits) if tp is not None else order.tp
+                
+                request = {
+                    "action": mt5.TRADE_ACTION_MODIFY,
+                    "order": order.ticket,
+                    "price": new_entry,
+                    "sl": new_sl,
+                    "tp": new_tp,
+                    "type_time": mt5.ORDER_TIME_GTC,
+                }
+                
+                result = mt5.order_send(request)
+                if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                    logger.info(f"✓ Order {ticket} modified: Entry={new_entry}, SL={new_sl}, TP={new_tp}")
+                    return True
+                else:
+                    error_msg = f"retcode={result.retcode}" if result else "No result"
+                    logger.error(f"Failed to modify order {ticket}: {error_msg}")
+                    return False
+            
+            logger.error(f"Order/Position {ticket} not found")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error modifying order {ticket}: {e}")
+            return False
+    
+    def find_order_by_symbol(self, symbol: str, order_type: str = None) -> Optional[int]:
+        """Find an order ticket by symbol and optionally order type"""
+        try:
+            # Map the symbol to broker format
+            broker_symbol = self.find_symbol(symbol)
+            if not broker_symbol:
+                logger.warning(f"Symbol {symbol} not found on broker")
+                return None
+            
+            # Check positions first
+            positions = mt5.positions_get(symbol=broker_symbol)
+            if positions:
+                for pos in positions:
+                    if pos.magic == self.config.magic_number:
+                        pos_type = 'BUY' if pos.type == mt5.POSITION_TYPE_BUY else 'SELL'
+                        if order_type is None or pos_type == order_type:
+                            logger.info(f"Found position {pos.ticket} for {symbol}")
+                            return pos.ticket
+            
+            # Check pending orders
+            orders = mt5.orders_get(symbol=broker_symbol)
+            if orders:
+                for order in orders:
+                    if order.magic == self.config.magic_number:
+                        order_type_map = {
+                            mt5.ORDER_TYPE_BUY_LIMIT: 'BUY LIMIT',
+                            mt5.ORDER_TYPE_SELL_LIMIT: 'SELL LIMIT',
+                            mt5.ORDER_TYPE_BUY_STOP: 'BUY STOP',
+                            mt5.ORDER_TYPE_SELL_STOP: 'SELL STOP',
+                        }
+                        ord_type = order_type_map.get(order.type, 'UNKNOWN')
+                        if order_type is None or ord_type == order_type:
+                            logger.info(f"Found pending order {order.ticket} for {symbol}")
+                            return order.ticket
+            
+            logger.warning(f"No order found for {symbol}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error finding order by symbol: {e}")
+            return None
 
     
     def _initialize_known_orders(self):
@@ -549,12 +687,26 @@ class MT5Trader:
             if positions:
                 for pos in positions:
                     self.known_orders.add(pos.ticket)
+                    # Store snapshot for change detection
+                    self.order_snapshots[pos.ticket] = {
+                        'price': pos.price_open,
+                        'sl': pos.sl,
+                        'tp': pos.tp,
+                        'volume': pos.volume
+                    }
             
             # Add pending orders
             orders = mt5.orders_get()
             if orders:
                 for order in orders:
                     self.known_orders.add(order.ticket)
+                    # Store snapshot for change detection
+                    self.order_snapshots[order.ticket] = {
+                        'price': order.price_open,
+                        'sl': order.sl,
+                        'tp': order.tp,
+                        'volume': order.volume_initial
+                    }
             
             logger.info(f"Initialized with {len(self.known_orders)} known orders")
         except Exception as e:
@@ -571,6 +723,14 @@ class MT5Trader:
                 for pos in positions:
                     if pos.ticket not in self.known_orders:
                         self.known_orders.add(pos.ticket)
+                        
+                        # Store snapshot
+                        self.order_snapshots[pos.ticket] = {
+                            'price': pos.price_open,
+                            'sl': pos.sl,
+                            'tp': pos.tp,
+                            'volume': pos.volume
+                        }
                         
                         order_info = {
                             'ticket': pos.ticket,
@@ -593,6 +753,14 @@ class MT5Trader:
                 for order in orders:
                     if order.ticket not in self.known_orders:
                         self.known_orders.add(order.ticket)
+                        
+                        # Store snapshot
+                        self.order_snapshots[order.ticket] = {
+                            'price': order.price_open,
+                            'sl': order.sl,
+                            'tp': order.tp,
+                            'volume': order.volume_initial
+                        }
                         
                         order_type_map = {
                             mt5.ORDER_TYPE_BUY_LIMIT: 'BUY LIMIT',
@@ -622,3 +790,117 @@ class MT5Trader:
             logger.error(f"Error checking for new orders: {e}")
         
         return new_orders
+    
+    def check_for_order_modifications(self) -> List[Dict]:
+        """Check for modifications to existing orders (entry, SL, TP changes)"""
+        modified_orders = []
+        
+        try:
+            # Check positions for modifications
+            positions = mt5.positions_get()
+            if positions:
+                for pos in positions:
+                    if pos.ticket in self.order_snapshots:
+                        snapshot = self.order_snapshots[pos.ticket]
+                        changes = []
+                        
+                        # Check for SL change
+                        if abs(pos.sl - snapshot['sl']) > 0.00001:
+                            changes.append(f"SL: {snapshot['sl']} → {pos.sl}")
+                            snapshot['sl'] = pos.sl
+                        
+                        # Check for TP change
+                        if abs(pos.tp - snapshot['tp']) > 0.00001:
+                            changes.append(f"TP: {snapshot['tp']} → {pos.tp}")
+                            snapshot['tp'] = pos.tp
+                        
+                        # Check for volume change (partial close)
+                        if abs(pos.volume - snapshot['volume']) > 0.00001:
+                            changes.append(f"Volume: {snapshot['volume']} → {pos.volume}")
+                            snapshot['volume'] = pos.volume
+                        
+                        if changes:
+                            order_info = {
+                                'ticket': pos.ticket,
+                                'type': 'BUY' if pos.type == mt5.POSITION_TYPE_BUY else 'SELL',
+                                'symbol': pos.symbol,
+                                'volume': pos.volume,
+                                'price': pos.price_open,
+                                'sl': pos.sl,
+                                'tp': pos.tp,
+                                'changes': changes,
+                                'is_modification': True
+                            }
+                            modified_orders.append(order_info)
+                            logger.info(f"Position modified: {pos.ticket} - {', '.join(changes)}")
+            
+            # Check pending orders for modifications
+            orders = mt5.orders_get()
+            if orders:
+                for order in orders:
+                    if order.ticket in self.order_snapshots:
+                        snapshot = self.order_snapshots[order.ticket]
+                        changes = []
+                        
+                        # Check for entry price change
+                        if abs(order.price_open - snapshot['price']) > 0.00001:
+                            changes.append(f"Entry: {snapshot['price']} → {order.price_open}")
+                            snapshot['price'] = order.price_open
+                        
+                        # Check for SL change
+                        if abs(order.sl - snapshot['sl']) > 0.00001:
+                            changes.append(f"SL: {snapshot['sl']} → {order.sl}")
+                            snapshot['sl'] = order.sl
+                        
+                        # Check for TP change
+                        if abs(order.tp - snapshot['tp']) > 0.00001:
+                            changes.append(f"TP: {snapshot['tp']} → {order.tp}")
+                            snapshot['tp'] = order.tp
+                        
+                        # Check for volume change
+                        if abs(order.volume_initial - snapshot['volume']) > 0.00001:
+                            changes.append(f"Volume: {snapshot['volume']} → {order.volume_initial}")
+                            snapshot['volume'] = order.volume_initial
+                        
+                        if changes:
+                            order_type_map = {
+                                mt5.ORDER_TYPE_BUY_LIMIT: 'BUY LIMIT',
+                                mt5.ORDER_TYPE_SELL_LIMIT: 'SELL LIMIT',
+                                mt5.ORDER_TYPE_BUY_STOP: 'BUY STOP',
+                                mt5.ORDER_TYPE_SELL_STOP: 'SELL STOP',
+                                mt5.ORDER_TYPE_BUY_STOP_LIMIT: 'BUY STOP LIMIT',
+                                mt5.ORDER_TYPE_SELL_STOP_LIMIT: 'SELL STOP LIMIT',
+                            }
+                            
+                            order_info = {
+                                'ticket': order.ticket,
+                                'type': order_type_map.get(order.type, 'UNKNOWN'),
+                                'symbol': order.symbol,
+                                'volume': order.volume_initial,
+                                'price': order.price_open,
+                                'sl': order.sl,
+                                'tp': order.tp,
+                                'changes': changes,
+                                'is_modification': True
+                            }
+                            modified_orders.append(order_info)
+                            logger.info(f"Pending order modified: {order.ticket} - {', '.join(changes)}")
+            
+            # Clean up snapshots for closed/cancelled orders
+            current_tickets = set()
+            if positions:
+                current_tickets.update(pos.ticket for pos in positions)
+            if orders:
+                current_tickets.update(order.ticket for order in orders)
+            
+            closed_tickets = set(self.order_snapshots.keys()) - current_tickets
+            for ticket in closed_tickets:
+                del self.order_snapshots[ticket]
+                if ticket in self.known_orders:
+                    self.known_orders.remove(ticket)
+                logger.info(f"Order {ticket} closed/cancelled, removed from tracking")
+        
+        except Exception as e:
+            logger.error(f"Error checking for order modifications: {e}")
+        
+        return modified_orders

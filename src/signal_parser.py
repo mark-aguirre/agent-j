@@ -26,6 +26,16 @@ class TradingSignal:
     tp_pips: Optional[float] = None
     raw_message: str = ""
 
+@dataclass
+class OrderModification:
+    ticket: int
+    symbol: str
+    order_type: str
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    changes: list = None
+
 class SignalParser:
     """Parse trading signals from Discord messages"""
     
@@ -35,8 +45,70 @@ class SignalParser:
         "EURGBP", "EURJPY", "GBPJPY", "AUDJPY", "EURAUD", "EURCHF", "GBPCHF",
         "AUDCAD", "AUDNZD", "CADJPY", "CHFJPY", "NZDJPY", "GBPAUD", "GBPCAD",
         "GBPNZD", "EURCAD", "EURNZD", "AUDCHF", "CADCHF", "NZDCAD", "NZDCHF",
-        "XAUUSD", "XAGUSD", "US30", "NAS100", "SPX500", "BTCUSD", "ETHUSD"
+        # Metals
+        "XAUUSD", "XAUUSDC", "XAUUSDT", "XAGUSD", "XAGUSDC", "XAGUSDT",
+        # Indices
+        "US30", "NAS100", "SPX500", "US100", "DJ30", "SP500",
+        # Crypto
+        "BTCUSD", "BTCUSDC", "BTCUSDT", "ETHUSD", "ETHUSDC", "ETHUSDT",
+        "XRPUSD", "XRPUSDC", "XRPUSDT", "ADAUSD", "SOLUSD", "DOTUSD",
+        "BNBUSD", "DOGEUSD", "MATICUSD", "AVAXUSD", "LINKUSD"
     ]
+    
+    def parse_modification(self, message: str) -> Optional[OrderModification]:
+        """Parse an order modification message from Discord"""
+        try:
+            # Check if this is a modification message
+            if "ORDER MODIFIED" not in message.upper() and "🔄" not in message:
+                return None
+            
+            # Extract ticket number
+            ticket_match = re.search(r'Ticket\s*#?(\d+)', message, re.IGNORECASE)
+            if not ticket_match:
+                return None
+            ticket = int(ticket_match.group(1))
+            
+            # Extract symbol
+            symbol_match = re.search(r'Pair:\s*([A-Z0-9]+)', message, re.IGNORECASE)
+            if not symbol_match:
+                return None
+            symbol = symbol_match.group(1).upper()
+            
+            # Extract order type
+            type_match = re.search(r'Type:\s*([A-Z\s]+)', message, re.IGNORECASE)
+            order_type = type_match.group(1).strip() if type_match else "UNKNOWN"
+            
+            # Extract current prices
+            entry_match = re.search(r'Entry:\s*([\d.]+)', message, re.IGNORECASE)
+            sl_match = re.search(r'SL:\s*([\d.]+)', message, re.IGNORECASE)
+            tp_match = re.search(r'TP:\s*([\d.]+)', message, re.IGNORECASE)
+            
+            entry = float(entry_match.group(1)) if entry_match else None
+            sl = float(sl_match.group(1)) if sl_match else None
+            tp = float(tp_match.group(1)) if tp_match else None
+            
+            # Extract changes list
+            changes = []
+            changes_section = re.search(r'Changes:(.*)', message, re.IGNORECASE | re.DOTALL)
+            if changes_section:
+                change_lines = changes_section.group(1).strip().split('\n')
+                for line in change_lines:
+                    if '→' in line or '->' in line:
+                        changes.append(line.strip().lstrip('•').strip())
+            
+            return OrderModification(
+                ticket=ticket,
+                symbol=symbol,
+                order_type=order_type,
+                entry_price=entry,
+                stop_loss=sl,
+                take_profit=tp,
+                changes=changes
+            )
+        except Exception as e:
+            import logging
+            logging.error(f"Error parsing modification: {e}")
+            return None
     
     def parse(self, message: str) -> Optional[TradingSignal]:
         """Parse a Discord message and extract trading signal"""
@@ -90,8 +162,7 @@ class SignalParser:
         """Extract trading symbol from message, handling broker suffixes"""
         import re
         
-        # Try matching with broker suffixes (e.g., BTCUSDm, EURUSD.a, GBPUSD_sb, etc.)
-        # Pattern: base pair + optional suffix (letters, dots, underscores, numbers)
+        # First try: Match known pairs with optional broker suffixes
         for pair in self.FOREX_PAIRS:
             # Look for the base pair followed by common broker suffixes
             pattern = rf'\b{pair}[a-z0-9._\-]*\b'
@@ -99,6 +170,19 @@ class SignalParser:
             if match:
                 # Return the full symbol as it appears in the broker (with suffix)
                 return match.group(0).upper()
+        
+        # Second try: Generic pattern for any trading symbol
+        # Matches patterns like: BTCUSDC, XAUUSDT, EURUSD.m, GBPUSD_sb, etc.
+        # Pattern: 6-10 uppercase letters optionally followed by suffix
+        generic_pattern = r'\b([A-Z]{6,10}(?:[a-z0-9._\-]+)?)\b'
+        matches = re.findall(generic_pattern, message)
+        
+        if matches:
+            # Return the first match that looks like a trading symbol
+            for match in matches:
+                # Filter out common words that aren't symbols
+                if match not in ['ENTRY', 'LIMIT', 'MARKET', 'PENDING', 'SIGNAL']:
+                    return match.upper()
         
         return None
     
@@ -160,12 +244,15 @@ class SignalParser:
         # JPY pairs have 2 decimal places
         if "JPY" in symbol:
             return diff * 100  # 0.01 = 1 pip
-        # Crypto - use price difference directly (1 pip = $1 for BTC)
-        elif "BTC" in symbol or "ETH" in symbol or "XRP" in symbol:
-            return diff  # $2584 = 2584 pips
-        # Gold
-        elif "XAU" in symbol or "GOLD" in symbol:
-            return diff * 10  # 0.1 = 1 pip for gold
-        # Standard forex pairs
+        # Crypto - use price difference directly (1 pip = $1)
+        elif any(crypto in symbol.upper() for crypto in ["BTC", "ETH", "XRP", "ADA", "SOL", "DOT", "BNB", "DOGE", "MATIC", "AVAX", "LINK"]):
+            return diff  # Direct price difference
+        # Gold and Silver
+        elif any(metal in symbol.upper() for metal in ["XAU", "GOLD", "XAG", "SILVER"]):
+            return diff * 10  # 0.1 = 1 pip for metals
+        # Indices
+        elif any(index in symbol.upper() for index in ["US30", "NAS", "SPX", "US100", "DJ30", "SP500"]):
+            return diff  # Direct price difference for indices
+        # Standard forex pairs (default)
         else:
             return diff * 10000  # 0.0001 = 1 pip

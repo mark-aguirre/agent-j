@@ -14,12 +14,30 @@ from dotenv import load_dotenv
 
 from src.__version__ import __version__, __app_name__
 from src.config import load_config, TradingConfig
-from src.signal_parser import TradingSignal
+from src.signal_parser import TradingSignal, OrderModification
 from src.mt5_trader import MT5Trader
 from src.discord_bot import TradingDiscordBot
 
 # Create logs directory if it doesn't exist
-log_dir = Path('logs')
+# Use the directory where the script/executable is located
+if getattr(sys, 'frozen', False):
+    # Running as compiled executable
+    # Use _MEIPASS for PyInstaller or executable parent directory
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller temp directory - use executable's parent instead
+        app_dir = Path(sys.executable).parent
+    else:
+        app_dir = Path(sys.executable).parent
+    
+    # Ensure we're not in system32 or other system directories
+    if 'system32' in str(app_dir).lower() or 'windows' in str(app_dir).lower():
+        # Fall back to user's documents or current working directory
+        app_dir = Path.cwd()
+else:
+    # Running as script
+    app_dir = Path(__file__).parent
+
+log_dir = app_dir / 'logs'
 log_dir.mkdir(exist_ok=True)
 
 # Setup logging with UTF-8 encoding for Windows
@@ -65,6 +83,51 @@ class TradingBot:
         except Exception as e:
             logger.error(f"Error processing signal: {e}")
     
+    def on_modification_received(self, modification: OrderModification):
+        """Callback when Discord order modification is received"""
+        try:
+            logger.info("=" * 50)
+            logger.info(f"MODIFICATION RECEIVED: Ticket #{modification.ticket}")
+            logger.info(f"Symbol: {modification.symbol} | Type: {modification.order_type}")
+            logger.info(f"Entry: {modification.entry_price}")
+            logger.info(f"SL: {modification.stop_loss}")
+            logger.info(f"TP: {modification.take_profit}")
+            if modification.changes:
+                logger.info(f"Changes: {', '.join(modification.changes)}")
+            logger.info("=" * 50)
+            
+            # Try to apply the modification using the ticket
+            success = self.trader.modify_order(
+                ticket=modification.ticket,
+                entry=modification.entry_price,
+                sl=modification.stop_loss,
+                tp=modification.take_profit
+            )
+            
+            # If ticket not found, try to find by symbol
+            if not success:
+                logger.info(f"Ticket {modification.ticket} not found, searching by symbol...")
+                found_ticket = self.trader.find_order_by_symbol(
+                    modification.symbol, 
+                    modification.order_type
+                )
+                
+                if found_ticket:
+                    logger.info(f"Found matching order: {found_ticket}")
+                    success = self.trader.modify_order(
+                        ticket=found_ticket,
+                        entry=modification.entry_price,
+                        sl=modification.stop_loss,
+                        tp=modification.take_profit
+                    )
+            
+            if success:
+                logger.info(f"[OK] Order modified successfully")
+            else:
+                logger.error(f"[FAILED] Failed to modify order")
+        except Exception as e:
+            logger.error(f"Error processing modification: {e}")
+    
     async def position_manager_loop(self):
         """Background loop to manage open positions"""
         while self.running:
@@ -75,17 +138,30 @@ class TradingBot:
             await asyncio.sleep(1)  # Check every second
     
     async def order_monitor_loop(self):
-        """Background loop to monitor for new MT5 orders and send Discord notifications"""
+        """Background loop to monitor for new MT5 orders and modifications, then send Discord notifications"""
         logger.info("Order monitor loop started")
         while self.running:
             try:
+                # Check for new orders
                 new_orders = self.trader.check_for_new_orders()
                 
                 if new_orders:
                     logger.info(f"Found {len(new_orders)} new order(s)")
                     if self.discord_bot:
                         for order_info in new_orders:
-                            logger.info(f"Processing order: {order_info}")
+                            logger.info(f"Processing new order: {order_info}")
+                            await self.discord_bot.send_order_notification(order_info)
+                    else:
+                        logger.error("Discord bot is None, cannot send notifications")
+                
+                # Check for order modifications
+                modified_orders = self.trader.check_for_order_modifications()
+                
+                if modified_orders:
+                    logger.info(f"Found {len(modified_orders)} modified order(s)")
+                    if self.discord_bot:
+                        for order_info in modified_orders:
+                            logger.info(f"Processing modified order: {order_info}")
                             await self.discord_bot.send_order_notification(order_info)
                     else:
                         logger.error("Discord bot is None, cannot send notifications")
@@ -165,8 +241,12 @@ class TradingBot:
                 self.trader.disconnect()
         else:
             # CLIENT MODE: Monitor Discord and execute trades (NO signal sending)
-            self.discord_bot = TradingDiscordBot(self.config, self.on_signal_received, 
-                                                 on_ready_callback=lambda: setattr(self, 'discord_ready', True))
+            self.discord_bot = TradingDiscordBot(
+                self.config, 
+                self.on_signal_received,
+                self.on_modification_received,
+                on_ready_callback=lambda: setattr(self, 'discord_ready', True)
+            )
             
             try:
                 # Run Discord bot (this blocks)

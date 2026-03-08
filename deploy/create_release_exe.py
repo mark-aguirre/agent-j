@@ -20,9 +20,23 @@ def create_exe_release_package(version: str):
         print("ERROR: dist folder not found! Run: python deploy/build.py")
         sys.exit(1)
     
+    # Check for exe in both possible locations (onefile vs onedir)
     exe_file = dist_dir / "AgentJ-TradingBot.exe"
-    if not exe_file.exists():
-        print("ERROR: AgentJ-TradingBot.exe not found! Run: python deploy/build.py")
+    exe_folder = dist_dir / "AgentJ-TradingBot"
+    
+    if exe_file.exists():
+        # Onefile build
+        exe_source = exe_file
+        print(f"Found exe (onefile): {exe_source}")
+    elif (exe_folder / "AgentJ-TradingBot.exe").exists():
+        # Onedir build
+        exe_source = exe_folder / "AgentJ-TradingBot.exe"
+        print(f"Found exe (onedir): {exe_source}")
+    else:
+        print("ERROR: AgentJ-TradingBot.exe not found!")
+        print(f"  Checked: {exe_file}")
+        print(f"  Checked: {exe_folder / 'AgentJ-TradingBot.exe'}")
+        print("  Run: python deploy/build.py")
         sys.exit(1)
     
     # Clean up and create release directory
@@ -30,9 +44,54 @@ def create_exe_release_package(version: str):
         shutil.rmtree(release_dir)
     release_dir.mkdir()
     
-    # Copy executable and create logs directory
-    shutil.copy2(exe_file, release_dir / "AgentJ-TradingBot.exe")
-    (release_dir / "logs").mkdir()
+    # Copy executable and supporting files
+    if exe_source.parent.name == "AgentJ-TradingBot":
+        # Onedir build - copy entire folder contents
+        print("Copying onedir build contents...")
+        for item in exe_source.parent.iterdir():
+            if item.is_file():
+                shutil.copy2(item, release_dir / item.name)
+            elif item.is_dir() and item.name != "__pycache__":
+                shutil.copytree(item, release_dir / item.name)
+        
+        # Remove update installer scripts from _internal if they exist
+        internal_dir = release_dir / "_internal"
+        if internal_dir.exists():
+            update_scripts_to_remove = [
+                "update_installer.bat",
+                "get_latest_release.ps1",
+                "download_file.ps1",
+                "extract_archive.ps1"
+            ]
+            for script in update_scripts_to_remove:
+                script_path = internal_dir / script
+                if script_path.exists():
+                    script_path.unlink()
+                    print(f"  ✓ Removed {script} from _internal")
+    else:
+        # Onefile build - just copy exe
+        print("Copying onefile build...")
+        shutil.copy2(exe_source, release_dir / "AgentJ-TradingBot.exe")
+    
+    # Create logs directory if it doesn't exist
+    (release_dir / "logs").mkdir(exist_ok=True)
+    
+    # Copy update installer and helper scripts
+    print("Adding update installer scripts...")
+    update_scripts = [
+        "update_installer.bat",
+        "get_latest_release.ps1",
+        "download_file.ps1",
+        "extract_archive.ps1"
+    ]
+    
+    for script in update_scripts:
+        script_path = Path("deploy") / script
+        if script_path.exists():
+            shutil.copy2(script_path, release_dir / script)
+            print(f"  ✓ Added {script}")
+        else:
+            print(f"  ⚠ Warning: {script} not found in deploy folder")
     
     # Create .env template
     env_template = """# AgentJ Trading Bot Configuration

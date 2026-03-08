@@ -329,11 +329,8 @@ class MainWindow:
         """Handle tab change event to show/hide update button"""
         current_tab = self.notebook.index(self.notebook.select())
         
-        # Show update button only on Settings tab (index 3)
-        if current_tab == 3:
-            self.update_btn.pack(side=tk.LEFT, padx=(0, 10))
-        else:
-            self.update_btn.pack_forget()
+        # Update button is hidden - no longer shown on any tab
+        self.update_btn.pack_forget()
     
     def _check_for_updates(self):
         """Delegate update check to settings tab"""

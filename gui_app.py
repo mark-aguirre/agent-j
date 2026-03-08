@@ -10,6 +10,15 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Set working directory to executable location when frozen
+if getattr(sys, 'frozen', False):
+    # Running as compiled executable
+    exe_dir = Path(sys.executable).parent
+    # Only change directory if we're in a system directory
+    if 'system32' in str(Path.cwd()).lower() or 'windows' in str(Path.cwd()).lower():
+        os.chdir(exe_dir)
+        print(f"Changed working directory to: {exe_dir}")
+
 from src.__version__ import __version__, __app_name__
 from src.config import load_config
 from src.gui.main_window import MainWindow

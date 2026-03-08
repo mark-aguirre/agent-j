@@ -594,29 +594,24 @@ Note: Leave the path empty if MT5 is installed in the default location."""
                 progress.destroy()
                 
                 if success:
-                    response = messagebox.showinfo(
-                        "Update Successful",
+                    # For exe updates, the updater has prepared everything
+                    # Just show message and exit - the batch script will handle the rest
+                    messagebox.showinfo(
+                        "Update Ready",
                         f"{message}\n\n"
-                        f"Click OK to restart the application."
+                        f"The application will now close and update automatically.\n"
+                        f"It will restart with the new version."
                     )
                     
-                    # Restart the application
+                    # Exit the application - the updater script will take over
                     import sys
                     import os
-                    import subprocess
                     
-                    # Close current instance
+                    # Force close the main window
                     self.main_window.root.destroy()
                     
-                    # Restart
-                    if getattr(sys, 'frozen', False):
-                        # Running as compiled executable
-                        subprocess.Popen([sys.executable])
-                    else:
-                        # Running as script
-                        subprocess.Popen([sys.executable] + sys.argv)
-                    
-                    sys.exit(0)
+                    # Exit immediately
+                    os._exit(0)
                 else:
                     messagebox.showerror("Update Failed", message)
                     
