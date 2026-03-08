@@ -3,5 +3,5 @@
 gh auth login
 
 # Create release with file
-gh release create v2.3.18 AgentJ-TradingBot-v2.3.18.zip --title "Version 2.3.18" --notes "Release notes"
+gh release create v2.3.19 AgentJ-TradingBot-v2.3.19.zip --title "Version 2.3.19" --notes "Release notes"
 
