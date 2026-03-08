@@ -7,6 +7,7 @@ import threading
 import queue
 import logging
 import asyncio
+import hashlib
 
 from src.__version__ import __version__, __app_name__
 from src.config import TradingConfig
@@ -26,6 +27,10 @@ class MainWindow:
         self.bot_thread = None
         self.running = False
         self.log_queue = queue.Queue()
+        self.master_mode_unlocked = False
+        
+        # Master mode password hash (SHA-256 of "sdfddsfdfgdfsgfsdg")
+        self.master_password_hash = "60ff6f71612bdb63559b53032844d172eba6928b77f688c0b2d94846104b80b8"
         
         # Setup window
         self.root.title(f"{__app_name__} v{__version__}")
@@ -218,6 +223,13 @@ class MainWindow:
     
     def _set_mode(self, mode):
         """Set trading mode"""
+        # Check if trying to switch to master mode
+        if mode == "master" and not self.master_mode_unlocked:
+            if self._check_master_password():
+                self.master_mode_unlocked = True
+            else:
+                return  # Don't switch mode if password check failed
+        
         self.mode_var.set(mode)
         if mode == "client":
             self.client_btn.config(bg=self.accent_orange, fg="white", font=(self.font_family, 10, "bold"))
@@ -225,6 +237,93 @@ class MainWindow:
         else:
             self.master_btn.config(bg=self.accent_orange, fg="white", font=(self.font_family, 10, "bold"))
             self.client_btn.config(bg=self.bg_card, fg=self.text_secondary, font=(self.font_family, 10))
+    
+    def _check_master_password(self):
+        """Show password dialog and verify master mode password"""
+        # Create password dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Master Mode")
+        dialog.geometry("350x150")
+        dialog.resizable(False, False)
+        dialog.configure(bg=self.bg_primary)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        # Track attempts
+        attempts = [0]  # Use list to modify in nested function
+        max_attempts = 3
+        result = [False]  # Store result
+        
+        # Title
+        tk.Label(dialog, text="🔐 Enter Master Password", 
+                bg=self.bg_primary, fg=self.text_primary,
+                font=(self.font_family, 10, "bold")).pack(pady=(15, 10))
+        
+        # Password entry
+        password_entry = tk.Entry(dialog, 
+                                 bg=self.bg_secondary, fg=self.text_primary,
+                                 font=(self.font_family, 9),
+                                 relief=tk.FLAT, insertbackground=self.text_primary,
+                                 width=28, show="*")
+        password_entry.pack(padx=20, pady=5)
+        password_entry.focus()
+        
+        # Error label
+        error_label = tk.Label(dialog, text="", 
+                              bg=self.bg_primary, fg=self.accent_red,
+                              font=(self.font_family, 8))
+        error_label.pack(pady=2)
+        
+        def verify_password():
+            entered = password_entry.get()
+            entered_hash = hashlib.sha256(entered.encode()).hexdigest()
+            
+            if entered_hash == self.master_password_hash:
+                result[0] = True
+                dialog.destroy()
+            else:
+                attempts[0] += 1
+                remaining = max_attempts - attempts[0]
+                
+                if remaining > 0:
+                    error_label.config(text=f"Incorrect. {remaining} attempt(s) left.")
+                    password_entry.delete(0, tk.END)
+                    password_entry.focus()
+                else:
+                    messagebox.showerror("Access Denied", "Maximum attempts exceeded.")
+                    dialog.destroy()
+        
+        # Buttons
+        btn_frame = tk.Frame(dialog, bg=self.bg_primary)
+        btn_frame.pack(pady=10)
+        
+        tk.Button(btn_frame, text="Cancel", 
+                 command=dialog.destroy,
+                 bg=self.bg_secondary, fg=self.text_primary,
+                 font=(self.font_family, 8),
+                 relief=tk.FLAT, padx=15, pady=4,
+                 cursor="hand2", borderwidth=0).pack(side=tk.LEFT, padx=3)
+        
+        tk.Button(btn_frame, text="Submit", 
+                 command=verify_password,
+                 bg=self.accent_green, fg="white",
+                 font=(self.font_family, 8, "bold"),
+                 relief=tk.FLAT, padx=15, pady=4,
+                 cursor="hand2", borderwidth=0).pack(side=tk.LEFT, padx=3)
+        
+        # Bind Enter key
+        password_entry.bind('<Return>', lambda e: verify_password())
+        
+        # Wait for dialog to close
+        self.root.wait_window(dialog)
+        
+        return result[0]
     
     def _on_tab_changed(self, event):
         """Handle tab change event to show/hide update button"""
