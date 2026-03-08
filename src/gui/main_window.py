@@ -164,6 +164,16 @@ class MainWindow:
                                       font=(self.font_family, 7))
         self.discord_status.pack(side=tk.LEFT, padx=3)
         
+        # Check for Updates button (hidden by default, shown only in Settings tab)
+        self.update_btn = tk.Button(right_header, text="🔄 Check for Updates", 
+                                    command=self._check_for_updates,
+                                    bg=self.accent_blue, fg="white",
+                                    font=(self.font_family, 8, "bold"),
+                                    relief=tk.FLAT, padx=15, pady=4,
+                                    cursor="hand2", borderwidth=0,
+                                    activebackground="#0066cc")
+        # Don't pack it yet - will be shown/hidden based on tab selection
+        
         # Start/Stop button
         self.start_btn = tk.Button(right_header, text="▶ Start", 
                                    command=self._toggle_bot,
@@ -189,6 +199,9 @@ class MainWindow:
         notebook = ttk.Notebook(content)
         notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
+        # Store notebook reference
+        self.notebook = notebook
+        
         # Create tabs
         self.dashboard_tab = DashboardTab(notebook, self)
         self.positions_tab = PositionsTab(notebook, self)
@@ -199,6 +212,9 @@ class MainWindow:
         notebook.add(self.positions_tab.frame, text="Positions")
         notebook.add(self.logs_tab.frame, text="Logs")
         notebook.add(self.settings_tab.frame, text="Settings")
+        
+        # Bind tab change event to show/hide update button
+        notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
     
     def _set_mode(self, mode):
         """Set trading mode"""
@@ -209,6 +225,20 @@ class MainWindow:
         else:
             self.master_btn.config(bg=self.accent_orange, fg="white", font=(self.font_family, 10, "bold"))
             self.client_btn.config(bg=self.bg_card, fg=self.text_secondary, font=(self.font_family, 10))
+    
+    def _on_tab_changed(self, event):
+        """Handle tab change event to show/hide update button"""
+        current_tab = self.notebook.index(self.notebook.select())
+        
+        # Show update button only on Settings tab (index 3)
+        if current_tab == 3:
+            self.update_btn.pack(side=tk.LEFT, padx=(0, 10))
+        else:
+            self.update_btn.pack_forget()
+    
+    def _check_for_updates(self):
+        """Delegate update check to settings tab"""
+        self.settings_tab._check_for_updates()
     
     def _toggle_bot(self):
         """Start or stop the bot"""

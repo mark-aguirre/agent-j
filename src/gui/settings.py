@@ -108,27 +108,6 @@ class SettingsTab:
         self.entries['spread_crypto'] = self._add_editable_row(spread_card, "Crypto", str(self.config.max_spread_crypto))
         
         tk.Label(spread_card, text="", bg=self.main_window.bg_card).pack(pady=4)
-        
-        # Update Section
-        update_card = self._create_card(right_col, "Application Updates")
-        
-        update_info_row = tk.Frame(update_card, bg=self.main_window.bg_card)
-        update_info_row.pack(fill=tk.X, padx=12, pady=3)
-        
-        from src.__version__ import __version__
-        tk.Label(update_info_row, text=f"Current Version: v{__version__}", 
-                bg=self.main_window.bg_card, fg=self.main_window.text_secondary,
-                font=(self.main_window.font_family, 8)).pack(side=tk.LEFT)
-        
-        update_btn_row = tk.Frame(update_card, bg=self.main_window.bg_card)
-        update_btn_row.pack(fill=tk.X, padx=12, pady=(5, 10))
-        
-        tk.Button(update_btn_row, text="Check for Updates", 
-                 command=self._check_for_updates,
-                 bg=self.main_window.accent_blue, fg="white",
-                 font=(self.main_window.font_family, 8, "bold"),
-                 relief=tk.FLAT, padx=12, pady=4, cursor="hand2",
-                 borderwidth=0).pack(side=tk.LEFT)
     
     def _create_card(self, parent, title):
         """Create a settings card"""

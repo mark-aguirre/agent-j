@@ -22,11 +22,12 @@ def build_exe():
     print("\nBuilding Agent J Trading Bot executable...")
     
     # Use the spec file for better control
+    spec_path = Path(__file__).parent / "AgentJ-TradingBot.spec"
     cmd = [
         "pyinstaller",
         "--clean",
         "--noconfirm",
-        "AgentJ-TradingBot.spec"
+        str(spec_path)
     ]
     
     try:

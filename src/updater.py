@@ -129,8 +129,114 @@ class Updater:
             logger.info("Installing update...")
             
             app_dir = Path(__file__).parent.parent
+            
+            # Check if running as executable or source
+            import sys
+            is_executable = getattr(sys, 'frozen', False)
+            
+            if is_executable:
+                # Running as .exe - update executable
+                return self._install_exe_update(zip_path, app_dir)
+            else:
+                # Running as source - update source files
+                return self._install_source_update(zip_path, app_dir)
+                
+        except Exception as e:
+            logger.error(f"Failed to install update: {e}")
+            return False
+    
+    def _install_exe_update(self, zip_path: Path, app_dir: Path) -> bool:
+        """Install update for executable version"""
+        try:
             backup_dir = app_dir / "backup_old_version"
             temp_extract_dir = app_dir / "temp_update"
+            
+            # Create backup of current version
+            logger.info("Creating backup of current version...")
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir)
+            backup_dir.mkdir()
+            
+            # Backup important files
+            exe_name = "AgentJ-TradingBot.exe"
+            if (app_dir / exe_name).exists():
+                shutil.copy2(app_dir / exe_name, backup_dir / exe_name)
+            
+            if (app_dir / ".env").exists():
+                shutil.copy2(app_dir / ".env", backup_dir / ".env")
+            
+            if (app_dir / "logs").exists():
+                shutil.copytree(app_dir / "logs", backup_dir / "logs")
+            
+            # Extract update
+            logger.info("Extracting update files...")
+            if temp_extract_dir.exists():
+                shutil.rmtree(temp_extract_dir)
+            temp_extract_dir.mkdir()
+            
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_extract_dir)
+            
+            # Find the actual content directory
+            extracted_items = list(temp_extract_dir.iterdir())
+            if len(extracted_items) == 1 and extracted_items[0].is_dir():
+                source_dir = extracted_items[0]
+            else:
+                source_dir = temp_extract_dir
+            
+            # Copy new executable (excluding .env and logs)
+            logger.info("Installing new executable...")
+            new_exe = source_dir / exe_name
+            if new_exe.exists():
+                # Rename old exe
+                old_exe = app_dir / exe_name
+                old_exe_backup = app_dir / f"{exe_name}.old"
+                if old_exe.exists():
+                    shutil.move(str(old_exe), str(old_exe_backup))
+                
+                # Copy new exe
+                shutil.copy2(new_exe, app_dir / exe_name)
+                
+                # Remove old backup
+                if old_exe_backup.exists():
+                    old_exe_backup.unlink()
+            
+            # Copy .env.template if exists (don't overwrite .env)
+            if (source_dir / ".env.template").exists() and not (app_dir / ".env").exists():
+                shutil.copy2(source_dir / ".env.template", app_dir / ".env.template")
+            
+            # Cleanup
+            shutil.rmtree(temp_extract_dir)
+            zip_path.unlink()
+            
+            logger.info("Update installed successfully!")
+            logger.info("Please restart the application to use the new version")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to install exe update: {e}")
+            logger.info("Attempting to restore from backup...")
+            
+            # Restore from backup
+            try:
+                if backup_dir.exists():
+                    exe_name = "AgentJ-TradingBot.exe"
+                    if (backup_dir / exe_name).exists():
+                        shutil.copy2(backup_dir / exe_name, app_dir / exe_name)
+                    logger.info("Restored from backup successfully")
+            except Exception as restore_error:
+                logger.error(f"Failed to restore from backup: {restore_error}")
+            
+            return False
+    
+    def _install_source_update(self, zip_path: Path, app_dir: Path) -> bool:
+        """Install update for source code version"""
+        try:
+            backup_dir = app_dir / "backup_old_version"
+            temp_extract_dir = app_dir / "temp_update"
+            
+            logger.info("Installing update...")
             
             # Create backup of current version
             logger.info("Creating backup of current version...")
@@ -183,6 +289,7 @@ class Updater:
             logger.info("Installing dependencies...")
             requirements_file = app_dir / "requirements.txt"
             if requirements_file.exists():
+                import sys
                 subprocess.run(
                     [sys.executable, "-m", "pip", "install", "-r", str(requirements_file)],
                     check=True
@@ -198,7 +305,7 @@ class Updater:
             return True
             
         except Exception as e:
-            logger.error(f"Failed to install update: {e}")
+            logger.error(f"Failed to install source update: {e}")
             logger.info("Attempting to restore from backup...")
             
             # Restore from backup if installation failed
