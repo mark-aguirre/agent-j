@@ -74,8 +74,8 @@ class SignalParser:
                 return None
             symbol = symbol_match.group(1).upper()
             
-            # Extract order type
-            type_match = re.search(r'Type:\s*([A-Z\s]+)', message, re.IGNORECASE)
+            # Extract order type (stop at newline or next field)
+            type_match = re.search(r'Type:\s*([A-Z\s]+?)(?:\n|Entry:|$)', message, re.IGNORECASE)
             order_type = type_match.group(1).strip() if type_match else "UNKNOWN"
             
             # Extract current prices

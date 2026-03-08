@@ -30,6 +30,7 @@ class MT5Trader:
         self.last_daily_reset = datetime.now()
         self.known_orders = set()  # Track known order tickets
         self.order_snapshots = {}  # Track order details for change detection
+        self.auto_modified_tickets = set()  # Track tickets modified by bot (trailing/breakeven)
     
     def connect(self) -> bool:
         """Initialize connection to MT5"""
@@ -408,6 +409,7 @@ class MT5Trader:
                         profit_pips = (pos.price_open - current_price) / pip_value
                     
                     new_sl = None
+                    modification_type = None
                     
                     # Break-Even
                     if self.config.use_break_even and profit_pips >= self.config.break_even_at_pips:
@@ -415,10 +417,12 @@ class MT5Trader:
                             be_sl = pos.price_open + (self.config.break_even_offset_pips * pip_value)
                             if pos.sl < pos.price_open and be_sl > pos.sl:
                                 new_sl = be_sl
+                                modification_type = "breakeven"
                         else:
                             be_sl = pos.price_open - (self.config.break_even_offset_pips * pip_value)
                             if (pos.sl > pos.price_open or pos.sl == 0) and be_sl < pos.sl:
                                 new_sl = be_sl
+                                modification_type = "breakeven"
                     
                     # Trailing Stop
                     if self.config.use_trailing_stop and profit_pips >= self.config.trailing_start_pips:
@@ -426,14 +430,17 @@ class MT5Trader:
                             trail_sl = current_price - (self.config.trailing_step_pips * pip_value)
                             if trail_sl > pos.sl:
                                 new_sl = trail_sl
+                                modification_type = "trailing"
                         else:
                             trail_sl = current_price + (self.config.trailing_step_pips * pip_value)
                             if trail_sl < pos.sl or pos.sl == 0:
                                 new_sl = trail_sl
+                                modification_type = "trailing"
                     
                     # Modify position if needed
                     if new_sl:
                         new_sl = round(new_sl, digits)
+                        
                         request = {
                             "action": mt5.TRADE_ACTION_SLTP,
                             "position": pos.ticket,
@@ -442,7 +449,9 @@ class MT5Trader:
                         }
                         result = mt5.order_send(request)
                         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                            logger.info(f"SL updated for {pos.ticket}: {new_sl}")
+                            # Mark this ticket as automatically modified
+                            self.auto_modified_tickets.add(pos.ticket)
+                            logger.info(f"SL updated for {pos.ticket}: {new_sl} ({modification_type})")
                 except Exception as e:
                     logger.error(f"Error managing position {pos.ticket}: {e}")
         except Exception as e:
@@ -561,8 +570,17 @@ class MT5Trader:
             return False
     
     def modify_order(self, ticket: int, entry: Optional[float] = None, 
-                     sl: Optional[float] = None, tp: Optional[float] = None) -> bool:
-        """Modify an existing position or pending order"""
+                     sl: Optional[float] = None, tp: Optional[float] = None,
+                     master_ticket: Optional[int] = None) -> bool:
+        """Modify an existing position or pending order
+        
+        Args:
+            ticket: The order/position ticket to modify
+            entry: New entry price (pending orders only)
+            sl: New stop loss
+            tp: New take profit
+            master_ticket: Master's ticket number to store in comment (for client mode)
+        """
         try:
             # First check if it's a position
             positions = mt5.positions_get(ticket=ticket)
@@ -611,12 +629,19 @@ class MT5Trader:
                 new_sl = round(sl, digits) if sl is not None else order.sl
                 new_tp = round(tp, digits) if tp is not None else order.tp
                 
+                # Update comment with master ticket if provided
+                new_comment = order.comment
+                if master_ticket:
+                    new_comment = f"Master#{master_ticket}"
+                    logger.info(f"Storing master ticket {master_ticket} in comment")
+                
                 request = {
                     "action": mt5.TRADE_ACTION_MODIFY,
                     "order": order.ticket,
                     "price": new_entry,
                     "sl": new_sl,
                     "tp": new_tp,
+                    "comment": new_comment,
                     "type_time": mt5.ORDER_TIME_GTC,
                 }
                 
@@ -636,8 +661,9 @@ class MT5Trader:
             logger.error(f"Error modifying order {ticket}: {e}")
             return False
     
-    def find_order_by_symbol(self, symbol: str, order_type: str = None) -> Optional[int]:
-        """Find an order ticket by symbol and optionally order type"""
+    def find_order_by_symbol_ordertype_and_entry(self, symbol: str, order_type: str = None, 
+                                                  entry_price: float = None) -> Optional[int]:
+        """Find an order ticket by symbol, order type, and optionally entry price"""
         try:
             # Map the symbol to broker format
             broker_symbol = self.find_symbol(symbol)
@@ -645,15 +671,33 @@ class MT5Trader:
                 logger.warning(f"Symbol {symbol} not found on broker")
                 return None
             
+            # Normalize order type for comparison (remove extra spaces, make uppercase)
+            normalized_order_type = None
+            if order_type:
+                normalized_order_type = ' '.join(order_type.upper().split())
+            
             # Check positions first
             positions = mt5.positions_get(symbol=broker_symbol)
             if positions:
                 for pos in positions:
                     if pos.magic == self.config.magic_number:
                         pos_type = 'BUY' if pos.type == mt5.POSITION_TYPE_BUY else 'SELL'
-                        if order_type is None or pos_type == order_type:
-                            logger.info(f"Found position {pos.ticket} for {symbol}")
-                            return pos.ticket
+                        
+                        # Check order type match
+                        if normalized_order_type and pos_type not in normalized_order_type:
+                            continue
+                        
+                        # Check entry price match (with tolerance for price differences)
+                        if entry_price is not None:
+                            price_diff = abs(pos.price_open - entry_price)
+                            # Use a tolerance based on symbol digits
+                            symbol_info = mt5.symbol_info(broker_symbol)
+                            tolerance = 10 * symbol_info.point if symbol_info else 0.0001
+                            if price_diff > tolerance:
+                                continue
+                        
+                        logger.info(f"Found position {pos.ticket} for {symbol} (entry: {pos.price_open})")
+                        return pos.ticket
             
             # Check pending orders
             orders = mt5.orders_get(symbol=broker_symbol)
@@ -667,15 +711,56 @@ class MT5Trader:
                             mt5.ORDER_TYPE_SELL_STOP: 'SELL STOP',
                         }
                         ord_type = order_type_map.get(order.type, 'UNKNOWN')
-                        if order_type is None or ord_type == order_type:
-                            logger.info(f"Found pending order {order.ticket} for {symbol}")
-                            return order.ticket
+                        
+                        # Check order type match
+                        if normalized_order_type and ord_type != normalized_order_type:
+                            continue
+                        
+                        # Check entry price match (with tolerance)
+                        if entry_price is not None:
+                            price_diff = abs(order.price_open - entry_price)
+                            # Use a tolerance based on symbol digits
+                            symbol_info = mt5.symbol_info(broker_symbol)
+                            tolerance = 10 * symbol_info.point if symbol_info else 0.0001
+                            if price_diff > tolerance:
+                                continue
+                        
+                        logger.info(f"Found pending order {order.ticket} for {symbol} (entry: {order.price_open})")
+                        return order.ticket
             
-            logger.warning(f"No order found for {symbol}")
+            logger.warning(f"No order found for {symbol} with type={order_type} and entry={entry_price}")
             return None
             
         except Exception as e:
-            logger.error(f"Error finding order by symbol: {e}")
+            logger.error(f"Error finding order by symbol/type/entry: {e}")
+            return None
+    
+    def find_order_by_master_ticket(self, master_ticket: int) -> Optional[int]:
+        """Find a client order by master ticket stored in comment"""
+        try:
+            # Check pending orders
+            orders = mt5.orders_get()
+            if orders:
+                for order in orders:
+                    if order.magic == self.config.magic_number:
+                        if order.comment and f"Master#{master_ticket}" in order.comment:
+                            logger.info(f"Found order {order.ticket} with master ticket {master_ticket}")
+                            return order.ticket
+            
+            # Check positions (in case order was already triggered)
+            positions = mt5.positions_get()
+            if positions:
+                for pos in positions:
+                    if pos.magic == self.config.magic_number:
+                        if pos.comment and f"Master#{master_ticket}" in pos.comment:
+                            logger.info(f"Found position {pos.ticket} with master ticket {master_ticket}")
+                            return pos.ticket
+            
+            logger.warning(f"No order found with master ticket {master_ticket}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error finding order by master ticket: {e}")
             return None
 
     
@@ -792,7 +877,8 @@ class MT5Trader:
         return new_orders
     
     def check_for_order_modifications(self) -> List[Dict]:
-        """Check for modifications to existing orders (entry, SL, TP changes)"""
+        """Check for modifications to existing orders (entry, SL, TP changes)
+        Only returns MANUAL modifications, not automatic ones from trailing stop/breakeven"""
         modified_orders = []
         
         try:
@@ -820,6 +906,14 @@ class MT5Trader:
                             snapshot['volume'] = pos.volume
                         
                         if changes:
+                            # Check if this was an automatic modification
+                            if pos.ticket in self.auto_modified_tickets:
+                                # Remove from tracking set and skip reporting
+                                self.auto_modified_tickets.discard(pos.ticket)
+                                logger.info(f"Position modified (AUTO): {pos.ticket} - {', '.join(changes)}")
+                                continue
+                            
+                            # This is a manual modification - report it
                             order_info = {
                                 'ticket': pos.ticket,
                                 'type': 'BUY' if pos.type == mt5.POSITION_TYPE_BUY else 'SELL',
@@ -832,7 +926,7 @@ class MT5Trader:
                                 'is_modification': True
                             }
                             modified_orders.append(order_info)
-                            logger.info(f"Position modified: {pos.ticket} - {', '.join(changes)}")
+                            logger.info(f"Position modified (MANUAL): {pos.ticket} - {', '.join(changes)}")
             
             # Check pending orders for modifications
             orders = mt5.orders_get()
@@ -863,6 +957,14 @@ class MT5Trader:
                             snapshot['volume'] = order.volume_initial
                         
                         if changes:
+                            # Check if this was an automatic modification
+                            if order.ticket in self.auto_modified_tickets:
+                                # Remove from tracking set and skip reporting
+                                self.auto_modified_tickets.discard(order.ticket)
+                                logger.info(f"Pending order modified (AUTO): {order.ticket} - {', '.join(changes)}")
+                                continue
+                            
+                            # This is a manual modification - report it
                             order_type_map = {
                                 mt5.ORDER_TYPE_BUY_LIMIT: 'BUY LIMIT',
                                 mt5.ORDER_TYPE_SELL_LIMIT: 'SELL LIMIT',
@@ -884,7 +986,7 @@ class MT5Trader:
                                 'is_modification': True
                             }
                             modified_orders.append(order_info)
-                            logger.info(f"Pending order modified: {order.ticket} - {', '.join(changes)}")
+                            logger.info(f"Pending order modified (MANUAL): {order.ticket} - {', '.join(changes)}")
             
             # Clean up snapshots for closed/cancelled orders
             current_tickets = set()
@@ -898,6 +1000,8 @@ class MT5Trader:
                 del self.order_snapshots[ticket]
                 if ticket in self.known_orders:
                     self.known_orders.remove(ticket)
+                # Also clean up auto_modified_tickets
+                self.auto_modified_tickets.discard(ticket)
                 logger.info(f"Order {ticket} closed/cancelled, removed from tracking")
         
         except Exception as e:

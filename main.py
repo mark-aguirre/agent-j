@@ -96,35 +96,38 @@ class TradingBot:
                 logger.info(f"Changes: {', '.join(modification.changes)}")
             logger.info("=" * 50)
             
-            # Try to apply the modification using the ticket
-            success = self.trader.modify_order(
-                ticket=modification.ticket,
-                entry=modification.entry_price,
-                sl=modification.stop_loss,
-                tp=modification.take_profit
-            )
+            client_ticket = None
             
-            # If ticket not found, try to find by symbol
-            if not success:
-                logger.info(f"Ticket {modification.ticket} not found, searching by symbol...")
-                found_ticket = self.trader.find_order_by_symbol(
+            # Strategy 1: Try to find by master ticket in comment
+            logger.info(f"Searching for order with master ticket {modification.ticket} in comment...")
+            client_ticket = self.trader.find_order_by_master_ticket(modification.ticket)
+            
+            # Strategy 2: If not found, search by symbol, order type, and entry price
+            if not client_ticket:
+                logger.info(f"Master ticket not found in comments, searching by symbol/type/entry...")
+                client_ticket = self.trader.find_order_by_symbol_ordertype_and_entry(
                     modification.symbol, 
-                    modification.order_type
+                    modification.order_type,
+                    modification.entry_price
+                )
+            
+            if client_ticket:
+                logger.info(f"Found client order: {client_ticket}")
+                success = self.trader.modify_order(
+                    ticket=client_ticket,
+                    entry=modification.entry_price,
+                    sl=modification.stop_loss,
+                    tp=modification.take_profit,
+                    master_ticket=modification.ticket  # Store master ticket in comment
                 )
                 
-                if found_ticket:
-                    logger.info(f"Found matching order: {found_ticket}")
-                    success = self.trader.modify_order(
-                        ticket=found_ticket,
-                        entry=modification.entry_price,
-                        sl=modification.stop_loss,
-                        tp=modification.take_profit
-                    )
-            
-            if success:
-                logger.info(f"[OK] Order modified successfully")
+                if success:
+                    logger.info(f"[OK] Order modified successfully")
+                else:
+                    logger.error(f"[FAILED] Failed to modify order")
             else:
-                logger.error(f"[FAILED] Failed to modify order")
+                logger.error(f"[FAILED] No matching order found for modification")
+                
         except Exception as e:
             logger.error(f"Error processing modification: {e}")
     
