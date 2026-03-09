@@ -54,20 +54,13 @@ def create_exe_release_package(version: str):
             elif item.is_dir() and item.name != "__pycache__":
                 shutil.copytree(item, release_dir / item.name)
         
-        # Remove update installer scripts from _internal if they exist
+        # Remove update installer script from _internal if it exists
         internal_dir = release_dir / "_internal"
         if internal_dir.exists():
-            update_scripts_to_remove = [
-                "update_installer.bat",
-                "get_latest_release.ps1",
-                "download_file.ps1",
-                "extract_archive.ps1"
-            ]
-            for script in update_scripts_to_remove:
-                script_path = internal_dir / script
-                if script_path.exists():
-                    script_path.unlink()
-                    print(f"  ✓ Removed {script} from _internal")
+            update_script = internal_dir / "update_installer.bat"
+            if update_script.exists():
+                update_script.unlink()
+                print(f"  ✓ Removed update_installer.bat from _internal")
     else:
         # Onefile build - just copy exe
         print("Copying onefile build...")
@@ -76,22 +69,14 @@ def create_exe_release_package(version: str):
     # Create logs directory if it doesn't exist
     (release_dir / "logs").mkdir(exist_ok=True)
     
-    # Copy update installer and helper scripts
-    print("Adding update installer scripts...")
-    update_scripts = [
-        "update_installer.bat",
-        "get_latest_release.ps1",
-        "download_file.ps1",
-        "extract_archive.ps1"
-    ]
-    
-    for script in update_scripts:
-        script_path = Path("deploy") / script
-        if script_path.exists():
-            shutil.copy2(script_path, release_dir / script)
-            print(f"  ✓ Added {script}")
-        else:
-            print(f"  ⚠ Warning: {script} not found in deploy folder")
+    # Copy update installer script
+    print("Adding update installer script...")
+    update_script = Path("deploy") / "update_installer.bat"
+    if update_script.exists():
+        shutil.copy2(update_script, release_dir / "update_installer.bat")
+        print(f"  ✓ Added update_installer.bat")
+    else:
+        print(f"  ⚠ Warning: update_installer.bat not found in deploy folder")
     
     # Create .env template
     env_template = """# AgentJ Trading Bot Configuration

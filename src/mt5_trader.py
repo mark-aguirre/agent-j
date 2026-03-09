@@ -6,6 +6,9 @@ from typing import Optional, List, Dict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
+import json
+import os
+from pathlib import Path
 
 from src.config import TradingConfig, RiskMode
 from src.signal_parser import TradingSignal, OrderType
@@ -31,6 +34,12 @@ class MT5Trader:
         self.known_orders = set()  # Track known order tickets
         self.order_snapshots = {}  # Track order details for change detection
         self.auto_modified_tickets = set()  # Track tickets modified by bot (trailing/breakeven)
+        self.recent_signals = {}  # Track recent signals to prevent duplicates: {signal_hash: timestamp}
+        self.daily_goal_notified = False  # Track if daily goal notification was sent
+        
+        # Loss recovery tracking
+        self.recovery_file = Path("_internal/loss_recovery.json")
+        self.cumulative_loss = self._load_cumulative_loss()
     
     def connect(self) -> bool:
         """Initialize connection to MT5"""
@@ -60,7 +69,82 @@ class MT5Trader:
         except Exception as e:
             logger.error(f"Error connecting to MT5: {e}")
             return False
-    
+    def _load_cumulative_loss(self) -> float:
+        """Load cumulative loss from file"""
+        try:
+            if self.recovery_file.exists():
+                with open(self.recovery_file, 'r') as f:
+                    data = json.load(f)
+                    loss = data.get('cumulative_loss', 0.0)
+                    logger.info(f"Loaded cumulative loss: ${loss:.2f}")
+                    return loss
+        except Exception as e:
+            logger.error(f"Error loading cumulative loss: {e}")
+        return 0.0
+
+    def _save_cumulative_loss(self):
+        """Save cumulative loss to file"""
+        try:
+            self.recovery_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.recovery_file, 'w') as f:
+                json.dump({
+                    'cumulative_loss': self.cumulative_loss,
+                    'last_updated': datetime.now().isoformat()
+                }, f, indent=2)
+            logger.info(f"Saved cumulative loss: ${self.cumulative_loss:.2f}")
+        except Exception as e:
+            logger.error(f"Error saving cumulative loss: {e}")
+
+    def _update_cumulative_loss(self, profit: float):
+        """Update cumulative loss with closed trade profit/loss"""
+        if profit < 0:
+            # Add to cumulative loss
+            self.cumulative_loss += abs(profit)
+            logger.info(f"Loss detected: ${profit:.2f}, Cumulative loss now: ${self.cumulative_loss:.2f}")
+        elif profit > 0 and self.cumulative_loss > 0:
+            # Reduce cumulative loss with profit
+            recovered = min(profit, self.cumulative_loss)
+            self.cumulative_loss -= recovered
+            logger.info(f"Profit ${profit:.2f} recovered ${recovered:.2f}, Remaining loss: ${self.cumulative_loss:.2f}")
+
+        self._save_cumulative_loss()
+
+    def _calculate_recovery_lots(self, symbol: str) -> float:
+        """Calculate additional lot size needed to recover losses at recovery pips"""
+        if not self.config.use_loss_recovery or self.cumulative_loss <= 0:
+            return 0.0
+        
+        symbol_info = mt5.symbol_info(symbol)
+        if not symbol_info:
+            return 0.0
+        
+        # Get pip value for 1 lot
+        tick_size = symbol_info.trade_tick_size
+        tick_value = symbol_info.trade_tick_value
+        
+        # Calculate pip value (1 pip = 10 points for most pairs)
+        point = symbol_info.point
+        pip_size = point * 10 if point < 0.001 else point  # Adjust for JPY pairs
+        
+        # Calculate how many ticks in recovery pips
+        ticks_in_recovery = (self.config.recovery_pips * pip_size) / tick_size
+        value_per_lot = ticks_in_recovery * tick_value
+        
+        if value_per_lot <= 0:
+            return 0.0
+        
+        # Calculate recovery lots needed
+        recovery_lots = self.cumulative_loss / value_per_lot
+        
+        # Round up to 0.01 (2 decimals)
+        recovery_lots = round(recovery_lots + 0.005, 2)
+        
+        logger.info(f"Recovery calculation: Loss=${self.cumulative_loss:.2f}, "
+                   f"Recovery target={self.config.recovery_pips} pips, "
+                   f"Recovery lots={recovery_lots:.2f}")
+        
+        return recovery_lots
+
     def find_symbol(self, base_symbol: str) -> Optional[str]:
         """Find the actual broker symbol (handles suffixes like 'm', '.r', etc.)"""
         try:
@@ -180,6 +264,12 @@ class MT5Trader:
                 if risk_per_lot > 0:
                     lot_size = self.config.fixed_money_risk / risk_per_lot
         
+        # Add recovery lots if loss recovery is enabled
+        recovery_lots = self._calculate_recovery_lots(symbol)
+        if recovery_lots > 0:
+            logger.info(f"Adding recovery lots: {recovery_lots:.2f} to base lot: {lot_size:.2f}")
+            lot_size += recovery_lots
+        
         # Apply limits
         lot_size = max(lot_size, self.config.min_lot)
         lot_size = min(lot_size, self.config.max_lot)
@@ -240,6 +330,7 @@ class MT5Trader:
             self.daily_start_balance = self.get_balance()
             self.daily_trade_count = 0
             self.last_daily_reset = now
+            self.daily_goal_notified = False  # Reset notification flag
             logger.info("Daily counters reset")
         
         if not self.config.use_daily_limits:
@@ -262,7 +353,26 @@ class MT5Trader:
             logger.warning(f"Daily profit target reached: {daily_pnl_percent:.2f}%")
             return False
         
+        # Check daily goal
+        if self.config.use_daily_goal and daily_pnl_percent >= self.config.daily_goal_percent:
+            logger.info(f"Daily goal reached: {daily_pnl_percent:.2f}% (Target: {self.config.daily_goal_percent}%)")
+            return False
+        
         return True
+    
+    def get_daily_goal_status(self) -> tuple[bool, float, float]:
+        """Check if daily goal is reached and return status
+        Returns: (goal_reached, current_percent, pnl_amount)
+        """
+        if not self.config.use_daily_goal or self.daily_start_balance <= 0:
+            return False, 0.0, 0.0
+        
+        current_balance = self.get_balance()
+        pnl_amount = current_balance - self.daily_start_balance
+        daily_pnl_percent = (pnl_amount / self.daily_start_balance) * 100
+        
+        goal_reached = daily_pnl_percent >= self.config.daily_goal_percent
+        return goal_reached, daily_pnl_percent, pnl_amount
     
     def is_trading_allowed(self, symbol: str) -> tuple[bool, str]:
         """Check if trading is allowed"""
@@ -275,6 +385,10 @@ class MT5Trader:
         if self.count_open_positions() >= self.config.max_open_trades:
             return False, "Max open trades reached"
         
+        # Check if there's already an open position on this symbol
+        if self.count_open_positions(symbol) > 0:
+            return False, f"Already have an open position on {symbol}"
+        
         if not self.check_daily_limits():
             return False, "Daily limits exceeded"
         
@@ -283,6 +397,26 @@ class MT5Trader:
     def execute_signal(self, signal: TradingSignal) -> TradeResult:
         """Execute a trading signal"""
         try:
+            # Create a hash of the signal to detect duplicates
+            signal_hash = f"{signal.symbol}_{signal.order_type.value}_{signal.entry_price}_{signal.stop_loss}_{signal.take_profit}"
+            
+            # Check if we've seen this exact signal recently (within last 60 seconds)
+            current_time = datetime.now()
+            if signal_hash in self.recent_signals:
+                last_time = self.recent_signals[signal_hash]
+                time_diff = (current_time - last_time).total_seconds()
+                if time_diff < 60:
+                    logger.warning(f"Duplicate signal detected (seen {time_diff:.1f}s ago), skipping: {signal.symbol} {signal.order_type.value}")
+                    return TradeResult(success=False, message="Duplicate signal ignored")
+            
+            # Store this signal
+            self.recent_signals[signal_hash] = current_time
+            
+            # Clean up old signals (older than 5 minutes)
+            old_signals = [k for k, v in self.recent_signals.items() if (current_time - v).total_seconds() > 300]
+            for old_signal in old_signals:
+                del self.recent_signals[old_signal]
+            
             # Find the actual broker symbol
             symbol = self.find_symbol(signal.symbol)
             if not symbol:
@@ -408,34 +542,54 @@ class MT5Trader:
                         current_price = tick.ask
                         profit_pips = (pos.price_open - current_price) / pip_value
                     
+                    # Enhanced logging for debugging
+                    logger.debug(f"Position {pos.ticket} ({pos.symbol}): "
+                               f"Type={'BUY' if pos.type == mt5.POSITION_TYPE_BUY else 'SELL'}, "
+                               f"Entry={pos.price_open}, Current={current_price}, "
+                               f"Profit={profit_pips:.1f} pips, "
+                               f"point={point}, digits={digits}, pip_value={pip_value}")
+                    
                     new_sl = None
                     modification_type = None
                     
                     # Break-Even
                     if self.config.use_break_even and profit_pips >= self.config.break_even_at_pips:
+                        logger.info(f"Position {pos.ticket}: Break-even triggered! "
+                                  f"Profit={profit_pips:.1f} pips >= Threshold={self.config.break_even_at_pips} pips")
                         if pos.type == mt5.POSITION_TYPE_BUY:
                             be_sl = pos.price_open + (self.config.break_even_offset_pips * pip_value)
-                            if pos.sl < pos.price_open and be_sl > pos.sl:
+                            # Only move SL if it's below entry (or zero) and new BE SL is better
+                            if (pos.sl < pos.price_open or pos.sl == 0) and be_sl > pos.sl:
                                 new_sl = be_sl
                                 modification_type = "breakeven"
-                        else:
+                                logger.info(f"Position {pos.ticket}: Moving SL to break-even: {pos.sl} -> {be_sl}")
+                        else:  # SELL position
                             be_sl = pos.price_open - (self.config.break_even_offset_pips * pip_value)
-                            if (pos.sl > pos.price_open or pos.sl == 0) and be_sl < pos.sl:
+                            # Only move SL if it's above entry (or zero) and new BE SL is better (lower)
+                            if (pos.sl > pos.price_open or pos.sl == 0) and (be_sl < pos.sl or pos.sl == 0):
                                 new_sl = be_sl
                                 modification_type = "breakeven"
+                                logger.info(f"Position {pos.ticket}: Moving SL to break-even: {pos.sl} -> {be_sl}")
                     
                     # Trailing Stop
                     if self.config.use_trailing_stop and profit_pips >= self.config.trailing_start_pips:
+                        logger.info(f"Position {pos.ticket}: Trailing stop triggered! "
+                                  f"Profit={profit_pips:.1f} pips >= Threshold={self.config.trailing_start_pips} pips, "
+                                  f"Step={self.config.trailing_step_pips} pips")
                         if pos.type == mt5.POSITION_TYPE_BUY:
                             trail_sl = current_price - (self.config.trailing_step_pips * pip_value)
+                            logger.info(f"Position {pos.ticket}: Calculated trail_sl={trail_sl}, current_sl={pos.sl}")
                             if trail_sl > pos.sl:
                                 new_sl = trail_sl
                                 modification_type = "trailing"
+                                logger.info(f"Position {pos.ticket}: Moving SL (trailing): {pos.sl} -> {trail_sl}")
                         else:
                             trail_sl = current_price + (self.config.trailing_step_pips * pip_value)
+                            logger.info(f"Position {pos.ticket}: Calculated trail_sl={trail_sl}, current_sl={pos.sl}")
                             if trail_sl < pos.sl or pos.sl == 0:
                                 new_sl = trail_sl
                                 modification_type = "trailing"
+                                logger.info(f"Position {pos.ticket}: Moving SL (trailing): {pos.sl} -> {trail_sl}")
                     
                     # Modify position if needed
                     if new_sl:
@@ -451,11 +605,41 @@ class MT5Trader:
                         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                             # Mark this ticket as automatically modified
                             self.auto_modified_tickets.add(pos.ticket)
-                            logger.info(f"SL updated for {pos.ticket}: {new_sl} ({modification_type})")
+                            logger.info(f"✓ SL updated for {pos.ticket}: {new_sl} ({modification_type})")
+                        else:
+                            logger.error(f"✗ Failed to update SL for {pos.ticket}: {result.comment if result else 'No result'}")
                 except Exception as e:
                     logger.error(f"Error managing position {pos.ticket}: {e}")
         except Exception as e:
             logger.error(f"Error in manage_positions: {e}")
+    
+    def track_closed_positions(self):
+        """Track closed positions and update cumulative loss"""
+        try:
+            # Get deals from today
+            from_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            deals = mt5.history_deals_get(from_date, datetime.now())
+            
+            if not deals:
+                return
+            
+            # Track processed deals to avoid duplicates
+            if not hasattr(self, 'processed_deals'):
+                self.processed_deals = set()
+            
+            for deal in deals:
+                # Only process OUT deals (position close) with our magic number
+                if deal.entry == mt5.DEAL_ENTRY_OUT and deal.magic == self.config.magic_number:
+                    if deal.ticket not in self.processed_deals:
+                        self.processed_deals.add(deal.ticket)
+                        
+                        # Update cumulative loss with the profit/loss
+                        if deal.profit != 0:
+                            self._update_cumulative_loss(deal.profit)
+                            logger.info(f"Closed position {deal.position_id}: Profit=${deal.profit:.2f}")
+        
+        except Exception as e:
+            logger.error(f"Error tracking closed positions: {e}")
     
     def close_all_positions(self) -> int:
         """Close all positions with our magic number"""

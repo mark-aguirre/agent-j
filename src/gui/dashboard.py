@@ -121,8 +121,19 @@ class DashboardTab:
                     pnl = equity - daily_start
                     pnl_percent = (pnl / daily_start) * 100
                     color = self.main_window.accent_green if pnl >= 0 else self.main_window.accent_red
+                    
+                    # Check if daily goal is enabled and reached
+                    goal_text = ""
+                    if bot.trader.config.use_daily_goal:
+                        goal_percent = bot.trader.config.daily_goal_percent
+                        if pnl_percent >= goal_percent:
+                            goal_text = " 🎯 GOAL!"
+                            color = self.main_window.accent_green
+                        elif pnl_percent >= goal_percent * 0.8:  # 80% of goal
+                            goal_text = f" (Goal: {goal_percent}%)"
+                    
                     self.pnl_label.config(
-                        text=f"${pnl:,.2f} ({pnl_percent:+.2f}%)",
+                        text=f"${pnl:,.2f} ({pnl_percent:+.2f}%){goal_text}",
                         foreground=color
                     )
                 

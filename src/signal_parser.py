@@ -238,21 +238,29 @@ class SignalParser:
         return None
     
     def _calculate_pips(self, symbol: str, price1: float, price2: float) -> float:
-        """Calculate pip difference between two prices"""
+        """Calculate pip difference between two prices
+        Uses same logic as mt5_trader.manage_positions for consistency"""
         diff = abs(price1 - price2)
         
-        # JPY pairs have 2 decimal places
-        if "JPY" in symbol:
-            return diff * 100  # 0.01 = 1 pip
-        # Crypto - use price difference directly (1 pip = $1)
-        elif any(crypto in symbol.upper() for crypto in ["BTC", "ETH", "XRP", "ADA", "SOL", "DOT", "BNB", "DOGE", "MATIC", "AVAX", "LINK"]):
-            return diff  # Direct price difference
-        # Gold and Silver
-        elif any(metal in symbol.upper() for metal in ["XAU", "GOLD", "XAG", "SILVER"]):
-            return diff * 10  # 0.1 = 1 pip for metals
-        # Indices
-        elif any(index in symbol.upper() for index in ["US30", "NAS", "SPX", "US100", "DJ30", "SP500"]):
-            return diff  # Direct price difference for indices
-        # Standard forex pairs (default)
+        # Determine decimal places from price to calculate pip value
+        price_str = str(price1)
+        if '.' in price_str:
+            decimals = len(price_str.split('.')[1])
         else:
-            return diff * 10000  # 0.0001 = 1 pip
+            decimals = 2  # Default
+        
+        # Calculate pip value same way as MT5Trader does
+        # For 3 or 5 decimals: pip = point * 10
+        # For 2 or 4 decimals: pip = point
+        if decimals in [3, 5]:
+            # point = 0.001 for 3 decimals, pip = 0.01
+            # point = 0.00001 for 5 decimals, pip = 0.0001
+            point = 10 ** (-decimals)
+            pip_value = point * 10
+        else:
+            # point = 0.01 for 2 decimals, pip = 0.01
+            # point = 0.0001 for 4 decimals, pip = 0.0001
+            point = 10 ** (-decimals)
+            pip_value = point
+        
+        return diff / pip_value

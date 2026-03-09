@@ -136,6 +136,7 @@ class TradingBot:
         while self.running:
             try:
                 self.trader.manage_positions()
+                self.trader.track_closed_positions()  # Track closed positions for loss recovery
             except Exception as e:
                 logger.error(f"Error in position manager: {e}")
             await asyncio.sleep(1)  # Check every second
@@ -173,6 +174,30 @@ class TradingBot:
                 logger.error(f"Error in order monitor: {e}", exc_info=True)
             await asyncio.sleep(2)  # Check every 2 seconds
     
+    async def daily_goal_monitor_loop(self):
+        """Background loop to monitor daily goal and send notification when reached"""
+        logger.info("Daily goal monitor loop started")
+        while self.running:
+            try:
+                goal_reached, current_percent, pnl_amount = self.trader.get_daily_goal_status()
+                
+                # Send notification only once when goal is reached
+                if goal_reached and not self.trader.daily_goal_notified:
+                    logger.info(f"Daily goal reached! Sending notification...")
+                    if self.discord_bot:
+                        await self.discord_bot.send_daily_goal_notification(
+                            current_percent, 
+                            self.config.daily_goal_percent,
+                            pnl_amount
+                        )
+                        self.trader.daily_goal_notified = True
+                    else:
+                        logger.warning("Discord bot is None, cannot send daily goal notification")
+                        
+            except Exception as e:
+                logger.error(f"Error in daily goal monitor: {e}", exc_info=True)
+            await asyncio.sleep(5)  # Check every 5 seconds
+    
     async def run(self):
         """Main run loop"""
         # Connect to MT5
@@ -187,6 +212,12 @@ class TradingBot:
         logger.info(f"Risk Mode: {self.config.risk_mode.value}")
         logger.info(f"Risk Per Trade: {self.config.risk_percent}%")
         logger.info(f"Max Daily Trades: {self.config.max_daily_trades}")
+        logger.info(f"Break-Even: {'Enabled' if self.config.use_break_even else 'Disabled'} "
+                   f"(Activate: {self.config.break_even_at_pips} pips, Offset: {self.config.break_even_offset_pips} pips)")
+        logger.info(f"Trailing Stop: {'Enabled' if self.config.use_trailing_stop else 'Disabled'} "
+                   f"(Start: {self.config.trailing_start_pips} pips, Step: {self.config.trailing_step_pips} pips)")
+        logger.info(f"Daily Goal: {'Enabled' if self.config.use_daily_goal else 'Disabled'} "
+                   f"(Target: {self.config.daily_goal_percent}%)")
         
         if self.mode == "master":
             logger.info("Mode: MASTER - Sending signals & managing positions")
@@ -199,6 +230,9 @@ class TradingBot:
         
         # Start position manager (both modes)
         position_task = asyncio.create_task(self.position_manager_loop())
+        
+        # Start daily goal monitor (both modes)
+        daily_goal_task = asyncio.create_task(self.daily_goal_monitor_loop())
         
         if self.mode == "master":
             # MASTER MODE: Monitor MT5 orders and send signals to Discord
@@ -235,6 +269,7 @@ class TradingBot:
             finally:
                 self.running = False
                 position_task.cancel()
+                daily_goal_task.cancel()
                 if order_monitor_task:
                     order_monitor_task.cancel()
                 if discord_task:
@@ -264,6 +299,10 @@ class TradingBot:
                     position_task.cancel()
                 except Exception as e:
                     logger.error(f"Error cancelling position task: {e}")
+                try:
+                    daily_goal_task.cancel()
+                except Exception as e:
+                    logger.error(f"Error cancelling daily goal task: {e}")
                 try:
                     if self.discord_bot:
                         await self.discord_bot.close()

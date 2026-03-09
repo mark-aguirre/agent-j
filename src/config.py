@@ -50,7 +50,7 @@ class TradingConfig:
     mt5_login: int = safe_int(os.getenv("MT5_LOGIN", "0"))
     mt5_password: str = os.getenv("MT5_PASSWORD", "")
     mt5_server: str = os.getenv("MT5_SERVER", "")
-    mt5_path: str = os.getenv("MT5_PATH", "")  # Path to terminal64.exe
+    mt5_path: str = os.getenv("MT5_PATH", "C:\\Program Files\\MetaTrader 5 EXNESS\\terminal64.exe")
     
     # Risk Management
     risk_mode: RiskMode = RiskMode.RISK_PERCENT
@@ -78,13 +78,21 @@ class TradingConfig:
     
     # Trailing Stop
     use_trailing_stop: bool = True
-    trailing_start_pips: float = 15.0
-    trailing_step_pips: float = 5.0
+    trailing_start_pips: float = 500.0
+    trailing_step_pips: float = 100.0
     
     # Break-Even
     use_break_even: bool = True
-    break_even_at_pips: float = 10.0
-    break_even_offset_pips: float = 2.0
+    break_even_at_pips: float = 300.0
+    break_even_offset_pips: float = 100.0
+    
+    # Daily Goal
+    use_daily_goal: bool = True
+    daily_goal_percent: float = 5.0
+    
+    # Loss Recovery
+    use_loss_recovery: bool = False
+    recovery_pips: float = 100.0  # Pips at which recovery should be achieved
 
 def load_config() -> TradingConfig:
     """Load configuration from environment variables"""
@@ -98,17 +106,24 @@ def load_config() -> TradingConfig:
             mt5_server=os.getenv("MT5_SERVER", ""),
             mt5_path=os.getenv("MT5_PATH", ""),
             risk_percent=safe_float(os.getenv("RISK_PERCENT", "1.0")),
+            min_lot=safe_float(os.getenv("MIN_LOT", "0.01")),
+            max_lot=safe_float(os.getenv("MAX_LOT", "10.0")),
+            max_open_trades=safe_int(os.getenv("MAX_OPEN_TRADES", "3")),
             max_daily_trades=safe_int(os.getenv("MAX_DAILY_TRADES", "5")),
             max_spread_forex=safe_int(os.getenv("MAX_SPREAD_FOREX", "20")),
             max_spread_gold=safe_int(os.getenv("MAX_SPREAD_GOLD", "500")),
             max_spread_indices=safe_int(os.getenv("MAX_SPREAD_INDICES", "300")),
             max_spread_crypto=safe_int(os.getenv("MAX_SPREAD_CRYPTO", "5000")),
             use_break_even=safe_bool(os.getenv("USE_BREAK_EVEN", "true")),
-            break_even_at_pips=safe_float(os.getenv("BREAK_EVEN_AT_PIPS", "10.0")),
-            break_even_offset_pips=safe_float(os.getenv("BREAK_EVEN_OFFSET_PIPS", "2.0")),
+            break_even_at_pips=safe_float(os.getenv("BREAK_EVEN_AT_PIPS", "300.0")),
+            break_even_offset_pips=safe_float(os.getenv("BREAK_EVEN_OFFSET_PIPS", "100.0")),
             use_trailing_stop=safe_bool(os.getenv("USE_TRAILING_STOP", "true")),
-            trailing_start_pips=safe_float(os.getenv("TRAILING_START_PIPS", "15.0")),
-            trailing_step_pips=safe_float(os.getenv("TRAILING_STEP_PIPS", "5.0")),
+            trailing_start_pips=safe_float(os.getenv("TRAILING_START_PIPS", "500.0")),
+            trailing_step_pips=safe_float(os.getenv("TRAILING_STEP_PIPS", "100.0")),
+            use_daily_goal=safe_bool(os.getenv("USE_DAILY_GOAL", "true")),
+            daily_goal_percent=safe_float(os.getenv("DAILY_GOAL_PERCENT", "5.0")),
+            use_loss_recovery=safe_bool(os.getenv("USE_LOSS_RECOVERY", "false")),
+            recovery_pips=safe_float(os.getenv("RECOVERY_PIPS", "100.0")),
         )
     except Exception as e:
         logger.error(f"Error loading config: {e}")

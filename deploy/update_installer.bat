@@ -5,6 +5,7 @@ REM AgentJ Trading Bot - Auto Update Installer
 REM This script automatically downloads and installs
 REM the latest version from GitHub releases
 REM ========================================
+echo.
 echo ========================================
 echo AgentJ Trading Bot - Update Installer
 echo ========================================
@@ -13,8 +14,7 @@ echo.
 echo [1/9] Checking for latest version...
 set "GITHUB_REPO=mark-aguirre/agent-j"
 
-echo Fetching release information from GitHub...
-powershell -ExecutionPolicy Bypass -File "%~dp0get_latest_release.ps1" -RepoOwner "mark-aguirre" -RepoName "agent-j" > temp_release_info.txt 2>&1
+powershell -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; try { $apiUrl='https://api.github.com/repos/mark-aguirre/agent-j/releases/latest'; $release=Invoke-RestMethod -Uri $apiUrl; $asset=$release.assets | Where-Object { $_.name -like '*.zip' } | Select-Object -First 1; if ($asset) { Write-Output $asset.browser_download_url; Write-Output $release.tag_name; exit 0 } else { Write-Output 'NO_ASSET'; Write-Output 'No .zip file found in latest release'; exit 1 } } catch { Write-Output 'API_ERROR'; Write-Output $_.Exception.Message; exit 1 }" > temp_release_info.txt 2>&1
 
 if errorlevel 1 (
     echo ERROR: Failed to fetch release information from GitHub!
@@ -41,14 +41,11 @@ if "%DOWNLOAD_URL%"=="" (
 )
 
 echo Found version: %VERSION%
-echo Download URL: %DOWNLOAD_URL%
+echo.
 
 echo [2/9] Downloading latest version...
 set "UPDATE_FILE=update_latest.zip"
-echo Downloading update package...
-echo URL: %DOWNLOAD_URL%
-echo.
-powershell -ExecutionPolicy Bypass -File "%~dp0download_file.ps1" -Url "%DOWNLOAD_URL%" -OutputFile "%UPDATE_FILE%"
+powershell -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; try { Invoke-WebRequest -Uri '%DOWNLOAD_URL%' -OutFile '%UPDATE_FILE%'; exit 0 } catch { Write-Host 'Download failed:' $_.Exception.Message; exit 1 }" >nul 2>&1
 
 if errorlevel 1 (
     echo ERROR: Failed to download update package!
@@ -61,11 +58,11 @@ if not exist "%UPDATE_FILE%" (
     pause
     exit /b 1
 )
-
-echo Download completed successfully.
+echo.
 
 echo [3/9] Waiting for application to close...
 timeout /t 2 /nobreak >nul
+echo.
 
 echo [4/9] Ensuring application is fully closed...
 taskkill /F /IM "AgentJ-TradingBot.exe" 2>nul
@@ -75,6 +72,7 @@ if errorlevel 1 (
     echo Application terminated.
     timeout /t 1 /nobreak >nul
 )
+echo.
 
 echo [5/9] Creating backup of current version...
 if exist "AgentJ-TradingBot-backup.exe" (
@@ -85,6 +83,7 @@ if exist "AgentJ-TradingBot.exe" (
     echo Backing up: AgentJ-TradingBot.exe -> AgentJ-TradingBot-backup.exe
     copy "AgentJ-TradingBot.exe" "AgentJ-TradingBot-backup.exe" >nul
 )
+echo.
 
 echo [6/9] Backing up _internal folder...
 if exist "_internal_backup" (
@@ -99,6 +98,7 @@ if exist "_internal" (
         rmdir /s /q "_internal"
     )
 )
+echo.
 
 echo [7/9] Extracting update package...
 if not exist "%UPDATE_FILE%" (
@@ -106,12 +106,12 @@ if not exist "%UPDATE_FILE%" (
     goto restore_backup
 )
 
-echo Extracting files...
-powershell -ExecutionPolicy Bypass -File "%~dp0extract_archive.ps1" -ZipFile "%UPDATE_FILE%" -Destination "temp_update"
+powershell -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; try { Expand-Archive -Path '%UPDATE_FILE%' -DestinationPath 'temp_update' -Force; exit 0 } catch { Write-Host 'Extraction failed:' $_.Exception.Message; exit 1 }" >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Failed to extract update package!
     goto restore_backup
 )
+echo.
 
 echo Preparing staging folder...
 if exist "update_staging" rmdir /s /q "update_staging"
@@ -121,6 +121,7 @@ if not exist "update_staging" (
     move "temp_update" "update_staging" >nul
 )
 if exist "temp_update" rmdir /s /q "temp_update"
+echo.
 
 echo [8/9] Installing new version...
 echo Copying exe file...
@@ -155,6 +156,7 @@ if not exist "_internal" (
     echo ERROR: _internal folder missing after update!
     goto restore_backup
 )
+echo.
 
 echo [9/9] Cleaning up temporary files...
 if exist "update_staging" (
@@ -184,8 +186,6 @@ start "" "AgentJ-TradingBot.exe"
 
 timeout /t 2 /nobreak >nul
 
-REM Self-delete this script
-del "%~f0"
 exit /b 0
 
 :restore_backup

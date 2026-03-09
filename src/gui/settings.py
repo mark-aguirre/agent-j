@@ -106,6 +106,29 @@ class SettingsTab:
         
         tk.Label(be_card, text="", bg=self.main_window.bg_card).pack(pady=4)
         
+        # Daily Goal Settings
+        dg_card = self._create_card(left_col, "Daily Goal Settings")
+        
+        self.entries['use_daily_goal'] = self._add_checkbox_row(dg_card, "Enabled", self.config.use_daily_goal)
+        self.entries['daily_goal_percent'] = self._add_editable_row(dg_card, "Daily Goal (%)", str(self.config.daily_goal_percent))
+        
+        tk.Label(dg_card, text="", bg=self.main_window.bg_card).pack(pady=4)
+        
+        # Loss Recovery Settings
+        lr_card = self._create_card(left_col, "Loss Recovery Settings")
+        
+        self.entries['use_loss_recovery'] = self._add_checkbox_row(lr_card, "Enabled", self.config.use_loss_recovery)
+        self.entries['recovery_pips'] = self._add_editable_row(lr_card, "Recovery Target (pips)", str(self.config.recovery_pips))
+        
+        # Add info label
+        info_label = tk.Label(lr_card, 
+                             text="💡 Automatically increases lot size to recover losses\nat the recovery target",
+                             bg=self.main_window.bg_card, fg=self.main_window.text_secondary,
+                             font=(self.main_window.font_family, 7), justify=tk.LEFT)
+        info_label.pack(fill=tk.X, padx=12, pady=(0, 8))
+        
+        tk.Label(lr_card, text="", bg=self.main_window.bg_card).pack(pady=4)
+        
         # RIGHT COLUMN
         
         # Trailing Stop Settings
@@ -258,6 +281,10 @@ class SettingsTab:
                 'USE_BREAK_EVEN': 'true' if self.entries['use_break_even'].get() else 'false',
                 'BREAK_EVEN_AT_PIPS': self.entries['break_even_at'].get(),
                 'BREAK_EVEN_OFFSET_PIPS': self.entries['break_even_offset'].get(),
+                'USE_DAILY_GOAL': 'true' if self.entries['use_daily_goal'].get() else 'false',
+                'DAILY_GOAL_PERCENT': self.entries['daily_goal_percent'].get(),
+                'USE_LOSS_RECOVERY': 'true' if self.entries['use_loss_recovery'].get() else 'false',
+                'RECOVERY_PIPS': self.entries['recovery_pips'].get(),
                 'USE_TRAILING_STOP': 'true' if self.entries['use_trailing'].get() else 'false',
                 'TRAILING_START_PIPS': self.entries['trailing_start'].get(),
                 'TRAILING_STEP_PIPS': self.entries['trailing_step'].get(),
@@ -306,6 +333,10 @@ class SettingsTab:
             self.config.use_break_even = self.entries['use_break_even'].get()
             self.config.break_even_at_pips = float(self.entries['break_even_at'].get()) if self.entries['break_even_at'].get() else 10.0
             self.config.break_even_offset_pips = float(self.entries['break_even_offset'].get()) if self.entries['break_even_offset'].get() else 2.0
+            self.config.use_daily_goal = self.entries['use_daily_goal'].get()
+            self.config.daily_goal_percent = float(self.entries['daily_goal_percent'].get()) if self.entries['daily_goal_percent'].get() else 2.0
+            self.config.use_loss_recovery = self.entries['use_loss_recovery'].get()
+            self.config.recovery_pips = float(self.entries['recovery_pips'].get()) if self.entries['recovery_pips'].get() else 100.0
             self.config.use_trailing_stop = self.entries['use_trailing'].get()
             self.config.trailing_start_pips = float(self.entries['trailing_start'].get()) if self.entries['trailing_start'].get() else 15.0
             self.config.trailing_step_pips = float(self.entries['trailing_step'].get()) if self.entries['trailing_step'].get() else 5.0

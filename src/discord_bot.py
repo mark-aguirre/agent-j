@@ -95,6 +95,31 @@ TP: {tp}"""
         except Exception as e:
             logger.error(f"Error sending order notification: {e}", exc_info=True)
     
+    async def send_daily_goal_notification(self, current_percent: float, goal_percent: float, pnl_amount: float):
+        """Send notification when daily goal is reached"""
+        try:
+            await self.wait_until_ready()
+            
+            channel = self.get_channel(self.notification_channel_id)
+            if not channel:
+                try:
+                    channel = await self.fetch_channel(self.notification_channel_id)
+                except Exception as e:
+                    logger.error(f"Could not fetch notification channel: {e}")
+                    return
+            
+            message = f"""🎯 DAILY GOAL REACHED! 🎯
+
+Current Profit: ${pnl_amount:,.2f} ({current_percent:.2f}%)
+Daily Goal: {goal_percent}%
+
+Trading stopped for today. Great job! 💰"""
+            
+            await channel.send(message)
+            logger.info(f"✓ Daily goal notification sent")
+        except Exception as e:
+            logger.error(f"Error sending daily goal notification: {e}", exc_info=True)
+    
     async def on_message(self, message: discord.Message):
         try:
             # Log all messages for debugging
