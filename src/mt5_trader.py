@@ -109,8 +109,13 @@ class MT5Trader:
 
         self._save_cumulative_loss()
 
-    def _calculate_recovery_lots(self, symbol: str) -> float:
-        """Calculate additional lot size needed to recover losses at recovery pips"""
+    def _calculate_recovery_lots(self, symbol: str, base_lot: float) -> float:
+        """Calculate additional lot size needed to recover losses at recovery pips
+        
+        Args:
+            symbol: Trading symbol
+            base_lot: Base lot size before recovery adjustment
+        """
         if not self.config.use_loss_recovery or self.cumulative_loss <= 0:
             return 0.0
         
@@ -122,9 +127,18 @@ class MT5Trader:
         tick_size = symbol_info.trade_tick_size
         tick_value = symbol_info.trade_tick_value
         
-        # Calculate pip value (1 pip = 10 points for most pairs)
+        # Calculate pip size based on symbol type
+        # For XAUUSD (Gold): 1 pip = 0.01
+        # For Forex pairs with 5 digits: 1 pip = 10 points (0.0001)
+        # For Forex pairs with 3 digits (JPY): 1 pip = 10 points (0.01)
+        # For standard pairs: 1 pip = point
         point = symbol_info.point
-        pip_size = point * 10 if point < 0.001 else point  # Adjust for JPY pairs
+        if "XAU" in symbol or "GOLD" in symbol:
+            pip_size = 0.01
+        elif symbol_info.digits in [3, 5]:
+            pip_size = point * 10
+        else:
+            pip_size = point
         
         # Calculate how many ticks in recovery pips
         ticks_in_recovery = (self.config.recovery_pips * pip_size) / tick_size
@@ -138,6 +152,48 @@ class MT5Trader:
         
         # Round up to 0.01 (2 decimals)
         recovery_lots = round(recovery_lots + 0.005, 2)
+        
+        # Apply maximum recovery lot limit from config
+        if recovery_lots > self.config.max_recovery_lots:
+            logger.warning(f"Recovery lots {recovery_lots:.2f} exceeds max limit {self.config.max_recovery_lots:.2f}, capping")
+            recovery_lots = self.config.max_recovery_lots
+        
+        # Calculate total lot size
+        total_lots = base_lot + recovery_lots
+        
+        # Check if we have enough margin for the total lot size
+        account_info = mt5.account_info()
+        if account_info:
+            # Get current price for margin calculation
+            tick = mt5.symbol_info_tick(symbol)
+            if tick:
+                price = tick.ask  # Use ask price for margin calculation
+                
+                # Calculate required margin
+                margin_rate = symbol_info.margin_initial if hasattr(symbol_info, 'margin_initial') else 1.0
+                required_margin = total_lots * symbol_info.trade_contract_size * price * margin_rate / account_info.leverage
+                
+                # Get available margin (free margin)
+                free_margin = account_info.margin_free
+                
+                logger.info(f"Margin check: Required=${required_margin:.2f}, Available=${free_margin:.2f}, "
+                           f"Total lots={total_lots:.2f} (Base={base_lot:.2f} + Recovery={recovery_lots:.2f})")
+                
+                # If not enough margin, reduce recovery lots
+                if required_margin > free_margin * 0.9:  # Use 90% of free margin as safety buffer
+                    # Calculate maximum affordable recovery lots
+                    max_affordable_margin = free_margin * 0.9
+                    max_total_lots = (max_affordable_margin * account_info.leverage) / (symbol_info.trade_contract_size * price * margin_rate)
+                    max_recovery_lots = max(0, max_total_lots - base_lot)
+                    
+                    # Apply lot step rounding
+                    lot_step = symbol_info.volume_step
+                    max_recovery_lots = int(max_recovery_lots / lot_step) * lot_step
+                    
+                    if max_recovery_lots < recovery_lots:
+                        logger.warning(f"Insufficient margin for full recovery. Reducing recovery lots: "
+                                     f"{recovery_lots:.2f} -> {max_recovery_lots:.2f}")
+                        recovery_lots = max_recovery_lots
         
         logger.info(f"Recovery calculation: Loss=${self.cumulative_loss:.2f}, "
                    f"Recovery target={self.config.recovery_pips} pips, "
@@ -264,21 +320,29 @@ class MT5Trader:
                 if risk_per_lot > 0:
                     lot_size = self.config.fixed_money_risk / risk_per_lot
         
-        # Add recovery lots if loss recovery is enabled
-        recovery_lots = self._calculate_recovery_lots(symbol)
-        if recovery_lots > 0:
-            logger.info(f"Adding recovery lots: {recovery_lots:.2f} to base lot: {lot_size:.2f}")
-            lot_size += recovery_lots
-        
-        # Apply limits
+        # Apply initial limits to base lot
         lot_size = max(lot_size, self.config.min_lot)
         lot_size = min(lot_size, self.config.max_lot)
         lot_size = max(lot_size, min_lot)
         lot_size = min(lot_size, max_lot)
         
-        # Round to lot step
+        # Round base lot to lot step
         lot_size = int(lot_size / lot_step) * lot_step
         lot_size = max(lot_size, min_lot)
+        
+        # Add recovery lots if loss recovery is enabled (pass base lot for margin check)
+        recovery_lots = self._calculate_recovery_lots(symbol, lot_size)
+        if recovery_lots > 0:
+            logger.info(f"Adding recovery lots: {recovery_lots:.2f} to base lot: {lot_size:.2f}")
+            lot_size += recovery_lots
+            
+            # Apply final limits after adding recovery
+            lot_size = min(lot_size, self.config.max_lot)
+            lot_size = min(lot_size, max_lot)
+            
+            # Round final lot to lot step
+            lot_size = int(lot_size / lot_step) * lot_step
+            lot_size = max(lot_size, min_lot)
         
         return round(lot_size, 2)
     
@@ -374,7 +438,7 @@ class MT5Trader:
         goal_reached = daily_pnl_percent >= self.config.daily_goal_percent
         return goal_reached, daily_pnl_percent, pnl_amount
     
-    def is_trading_allowed(self, symbol: str) -> tuple[bool, str]:
+    def is_trading_allowed(self, symbol: str, order_type: str = None, entry_price: float = None) -> tuple[bool, str]:
         """Check if trading is allowed"""
         if not self.connected:
             return False, "Not connected to MT5"
@@ -385,9 +449,11 @@ class MT5Trader:
         if self.count_open_positions() >= self.config.max_open_trades:
             return False, "Max open trades reached"
         
-        # Check if there's already an open position on this symbol
-        if self.count_open_positions(symbol) > 0:
-            return False, f"Already have an open position on {symbol}"
+        # Check for duplicate order (same symbol, order type, and entry price)
+        if order_type and entry_price:
+            existing_order = self.find_order_by_symbol_ordertype_and_entry(symbol, order_type, entry_price)
+            if existing_order:
+                return False, f"Duplicate order exists: {symbol} {order_type} @ {entry_price}"
         
         if not self.check_daily_limits():
             return False, "Daily limits exceeded"
@@ -423,7 +489,7 @@ class MT5Trader:
                 return TradeResult(success=False, message=f"Symbol {signal.symbol} not found on broker")
             
             # Check if trading is allowed
-            allowed, reason = self.is_trading_allowed(symbol)
+            allowed, reason = self.is_trading_allowed(symbol, signal.order_type.value, signal.entry_price)
             if not allowed:
                 return TradeResult(success=False, message=reason)
             
@@ -486,34 +552,80 @@ class MT5Trader:
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
             
-            # Send order
-            result = mt5.order_send(request)
+            # Send order with automatic lot size reduction on insufficient margin
+            max_retries = 10
+            retry_count = 0
             
-            if result is None:
-                return TradeResult(success=False, message=f"Order failed: {mt5.last_error()}")
+            # Get symbol lot constraints
+            lot_step = symbol_info.volume_step
+            min_lot = symbol_info.volume_min
             
-            if result.retcode != mt5.TRADE_RETCODE_DONE:
-                return TradeResult(
-                    success=False, 
-                    message=f"Order failed: {result.comment} (code: {result.retcode})"
-                )
+            while retry_count < max_retries:
+                result = mt5.order_send(request)
+                
+                if result is None:
+                    return TradeResult(success=False, message=f"Order failed: {mt5.last_error()}")
+                
+                # Check if order succeeded
+                if result.retcode == mt5.TRADE_RETCODE_DONE:
+                    self.daily_trade_count += 1
+                    logger.info(f"Trade executed: {signal.order_type.value} {symbol} | Lot: {lot_size} | SL: {sl_price_diff}")
+                    return TradeResult(
+                        success=True,
+                        ticket=result.order,
+                        message=f"Order placed successfully",
+                        lot_size=lot_size
+                    )
+                
+                # Check if it's a "no money" error
+                if result.retcode == 10019:  # TRADE_RETCODE_NO_MONEY
+                    retry_count += 1
+                    
+                    # If we're already at minimum lot, can't reduce further
+                    if lot_size <= min_lot:
+                        return TradeResult(
+                            success=False,
+                            message=f"Insufficient margin even with minimum lot size {min_lot}"
+                        )
+                    
+                    # Reduce lot size by 50% each retry for faster convergence
+                    new_lot_size = lot_size * 0.5
+                    
+                    # Round down to lot step
+                    new_lot_size = (new_lot_size // lot_step) * lot_step
+                    
+                    # Ensure we don't go below minimum
+                    new_lot_size = max(new_lot_size, min_lot)
+                    
+                    # If reduction didn't change the lot size, we're stuck
+                    if new_lot_size == lot_size:
+                        return TradeResult(
+                            success=False,
+                            message=f"Cannot reduce lot size further (current: {lot_size}, min: {min_lot})"
+                        )
+                    
+                    logger.warning(f"Insufficient margin with {lot_size:.2f} lots. Reducing to {new_lot_size:.2f} (attempt {retry_count}/{max_retries})")
+                    
+                    lot_size = new_lot_size
+                    request["volume"] = lot_size
+                else:
+                    # Other error, don't retry
+                    return TradeResult(
+                        success=False,
+                        message=f"Order failed: {result.comment} (code: {result.retcode})"
+                    )
             
-            self.daily_trade_count += 1
-            
-            logger.info(f"Trade executed: {signal.order_type.value} {symbol} | Lot: {lot_size} | SL: {sl_price_diff}")
-            
+            # Max retries reached
             return TradeResult(
-                success=True,
-                ticket=result.order,
-                message=f"Order placed successfully",
-                lot_size=lot_size
+                success=False,
+                message=f"Failed to place order after {max_retries} attempts to reduce lot size"
             )
         except Exception as e:
             logger.error(f"Error executing signal: {e}")
             return TradeResult(success=False, message=f"Error executing signal: {e}")
     
     def manage_positions(self):
-        """Manage open positions - trailing stop and break-even"""
+        """Manage open positions - trailing stop, break-even, and recovery mode auto-close"""
         try:
             positions = mt5.positions_get()
             if not positions:
@@ -532,7 +644,18 @@ class MT5Trader:
                     
                     point = symbol_info.point
                     digits = symbol_info.digits
-                    pip_value = point * 10 if digits in [3, 5] else point
+                    
+                    # Calculate pip value based on symbol type
+                    # For XAUUSD (Gold): 1 pip = 0.01 (e.g., 5180.00 to 5180.01)
+                    # For Forex pairs with 5 digits: 1 pip = 10 points (0.0001)
+                    # For Forex pairs with 3 digits (JPY): 1 pip = 10 points (0.01)
+                    # For Forex pairs with 2/4 digits: 1 pip = 1 point
+                    if "XAU" in pos.symbol or "GOLD" in pos.symbol:
+                        pip_value = 0.01  # Gold: 1 pip = 0.01
+                    elif digits in [3, 5]:
+                        pip_value = point * 10
+                    else:
+                        pip_value = point
                     
                     # Calculate profit in pips
                     if pos.type == mt5.POSITION_TYPE_BUY:
@@ -548,6 +671,18 @@ class MT5Trader:
                                f"Entry={pos.price_open}, Current={current_price}, "
                                f"Profit={profit_pips:.1f} pips, "
                                f"point={point}, digits={digits}, pip_value={pip_value}")
+                    
+                    # Recovery Mode Auto-Close: Close position if it reaches recovery target
+                    if self.config.use_loss_recovery and self.cumulative_loss > 0:
+                        if profit_pips >= self.config.recovery_pips:
+                            logger.info(f"🎯 Recovery target reached! Position {pos.ticket}: "
+                                      f"Profit={profit_pips:.1f} pips >= Target={self.config.recovery_pips} pips. "
+                                      f"Closing position to lock in recovery profit.")
+                            if self.close_position(pos.ticket):
+                                logger.info(f"✓ Position {pos.ticket} closed successfully for recovery")
+                            else:
+                                logger.error(f"✗ Failed to close position {pos.ticket} for recovery")
+                            continue  # Skip other modifications since we're closing
                     
                     new_sl = None
                     modification_type = None

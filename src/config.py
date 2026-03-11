@@ -93,6 +93,7 @@ class TradingConfig:
     # Loss Recovery
     use_loss_recovery: bool = False
     recovery_pips: float = 100.0  # Pips at which recovery should be achieved
+    max_recovery_lots: float = 1.0  # Maximum additional lots for recovery
 
 def load_config() -> TradingConfig:
     """Load configuration from environment variables"""
@@ -124,6 +125,7 @@ def load_config() -> TradingConfig:
             daily_goal_percent=safe_float(os.getenv("DAILY_GOAL_PERCENT", "5.0")),
             use_loss_recovery=safe_bool(os.getenv("USE_LOSS_RECOVERY", "false")),
             recovery_pips=safe_float(os.getenv("RECOVERY_PIPS", "100.0")),
+            max_recovery_lots=safe_float(os.getenv("MAX_RECOVERY_LOTS", "1.0")),
         )
     except Exception as e:
         logger.error(f"Error loading config: {e}")

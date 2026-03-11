@@ -8,6 +8,7 @@ import queue
 import logging
 import asyncio
 import hashlib
+import sys
 
 from src.__version__ import __version__, __app_name__
 from src.config import TradingConfig
@@ -329,12 +330,69 @@ class MainWindow:
         """Handle tab change event to show/hide update button"""
         current_tab = self.notebook.index(self.notebook.select())
         
-        # Update button is hidden - no longer shown on any tab
-        self.update_btn.pack_forget()
+        # Show Update button only on Settings tab (index 3)
+        if current_tab == 3:  # Settings tab
+            self.update_btn.pack(side=tk.LEFT, padx=(0, 8))
+            self.start_btn.pack(side=tk.LEFT)
+        else:
+            self.update_btn.pack_forget()
     
     def _check_for_updates(self):
-        """Delegate update check to settings tab"""
-        self.settings_tab._check_for_updates()
+        """Execute the update installer batch file"""
+        import os
+        import subprocess
+        from pathlib import Path
+        
+        try:
+            # Get the directory where the application is running
+            if getattr(sys, 'frozen', False):
+                # Running as compiled executable
+                app_dir = Path(sys.executable).parent
+            else:
+                # Running as script
+                app_dir = Path.cwd()
+            
+            # Look for update_installer.bat in the application directory
+            update_bat = app_dir / "update_installer.bat"
+            
+            if not update_bat.exists():
+                messagebox.showerror(
+                    "Update Error",
+                    f"Update installer not found!\n\n"
+                    f"Expected location: {update_bat}\n\n"
+                    f"Please download the latest version manually from GitHub."
+                )
+                return
+            
+            # Confirm with user
+            response = messagebox.askyesno(
+                "Check for Updates",
+                "This will check for updates and install the latest version if available.\n\n"
+                "The application will close during the update process.\n\n"
+                "Do you want to continue?"
+            )
+            
+            if not response:
+                return
+            
+            # Stop the bot if running
+            if self.running:
+                self._stop_bot()
+                # Give it a moment to stop
+                self.root.after(1000)
+            
+            # Execute the batch file
+            subprocess.Popen(
+                [str(update_bat)],
+                cwd=str(app_dir),
+                creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
+            )
+            
+            # Close the application
+            self.root.destroy()
+            
+        except Exception as e:
+            messagebox.showerror("Update Error", f"Failed to start update installer:\n{str(e)}")
     
     def _toggle_bot(self):
         """Start or stop the bot"""
