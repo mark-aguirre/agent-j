@@ -42,7 +42,12 @@ class Updater:
             logger.info(f"Checking for updates... Current version: {self.current_version}")
             
             # Get latest release info from GitHub
-            response = requests.get(self.api_url, timeout=10)
+            # Set headers to avoid rate limiting and ensure proper SSL/TLS
+            headers = {
+                'User-Agent': 'AgentJ-TradingBot',
+                'Accept': 'application/vnd.github.v3+json'
+            }
+            response = requests.get(self.api_url, headers=headers, timeout=10, verify=True)
             response.raise_for_status()
             
             release_data = response.json()
@@ -93,7 +98,12 @@ class Updater:
         try:
             logger.info(f"Downloading update from {download_url}")
             
-            response = requests.get(download_url, stream=True, timeout=30)
+            # Set headers for proper download
+            headers = {
+                'User-Agent': 'AgentJ-TradingBot',
+                'Accept': 'application/octet-stream'
+            }
+            response = requests.get(download_url, headers=headers, stream=True, timeout=30, verify=True)
             response.raise_for_status()
             
             total_size = int(response.headers.get('content-length', 0))
