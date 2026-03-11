@@ -3,5 +3,5 @@
 gh auth login
 
 # Create release with file
-gh release create v2.4.24 AgentJ-TradingBot-v2.4.24.zip --title "Version 2.4.24" --notes "Release notes"
+gh release create v2.4.25 AgentJ-TradingBot-v2.4.25.zip --title "Version 2.4.25" --notes "Release notes"
 
