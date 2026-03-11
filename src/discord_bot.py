@@ -7,6 +7,7 @@ from typing import Callable
 
 from src.config import TradingConfig
 from src.signal_parser import SignalParser, TradingSignal, OrderModification
+from src.session_checker import SessionChecker
 
 logger = logging.getLogger(__name__)
 
@@ -26,14 +27,22 @@ class TradingDiscordBot(discord.Client):
         self.on_modification = on_modification
         self.on_ready_callback = on_ready_callback
         self.parser = SignalParser()
+        self.session_checker = SessionChecker(config.enabled_sessions)
         self.channel_id = config.discord_channel_id
         self.notification_channel_id = config.discord_notification_channel_id or config.discord_channel_id
+        self.processed_messages = set()  # Track processed message IDs
     
     async def on_ready(self):
         try:
             logger.info(f"Discord bot logged in as {self.user}")
             logger.info(f"Monitoring channel ID: {self.channel_id}")
             logger.info(f"Notification channel ID: {self.notification_channel_id}")
+            
+            # Log enabled sessions
+            if self.config.enabled_sessions:
+                logger.info(f"Trading sessions enabled: {', '.join(self.config.enabled_sessions)}")
+            else:
+                logger.info("All trading sessions enabled (no filter)")
             
             # Call the ready callback if provided
             if self.on_ready_callback:
@@ -96,7 +105,7 @@ TP: {tp}"""
             logger.error(f"Error sending order notification: {e}", exc_info=True)
     
     async def send_daily_goal_notification(self, current_percent: float, goal_percent: float, pnl_amount: float):
-        """Send notification when daily goal is reached"""
+        """Send notification when daily profit limit is reached"""
         try:
             await self.wait_until_ready()
             
@@ -126,6 +135,11 @@ Trading stopped for today. Great job! 💰"""
             logger.debug(f"Message received - Channel: {message.channel.id}, Author: {message.author.id} ({message.author.name})")
             logger.debug(f"Message content: {message.content[:200]}")
             
+            # Check if we've already processed this message
+            if message.id in self.processed_messages:
+                logger.debug(f"Skipping already processed message ID: {message.id}")
+                return
+            
             # Only process messages from the configured channel
             if message.channel.id != self.channel_id:
                 logger.debug(f"Ignored message from different channel: {message.channel.id} (expecting {self.channel_id})")
@@ -138,6 +152,14 @@ Trading stopped for today. Great job! 💰"""
             
             logger.info(f"Processing message from authorized user in correct channel")
             logger.debug(f"Full message: {message.content}")
+            
+            # Mark message as processed
+            self.processed_messages.add(message.id)
+            
+            # Keep only last 1000 message IDs to prevent memory growth
+            if len(self.processed_messages) > 1000:
+                # Remove oldest entries (convert to list, remove first 100, convert back)
+                self.processed_messages = set(list(self.processed_messages)[100:])
             
             # First, try to parse as order modification
             modification = self.parser.parse_modification(message.content)
@@ -165,6 +187,16 @@ Trading stopped for today. Great job! 💰"""
             if signal:
                 logger.info(f"✓ Signal detected: {signal.order_type.value} {signal.symbol}")
                 logger.info(f"  Entry: {signal.entry_price} | SL: {signal.stop_loss} | TP: {signal.take_profit}")
+                
+                # Check if trading is allowed based on session
+                is_allowed, reason = self.session_checker.is_trading_allowed()
+                
+                if not is_allowed:
+                    logger.warning(f"❌ Signal rejected: {reason}")
+                    logger.info(f"  Current time is outside enabled trading sessions")
+                    return
+                
+                logger.info(f"✓ Session check passed: {reason}")
                 
                 # Call the signal handler
                 if self.on_signal:

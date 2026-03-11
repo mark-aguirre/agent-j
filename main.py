@@ -136,7 +136,6 @@ class TradingBot:
         while self.running:
             try:
                 self.trader.manage_positions()
-                self.trader.track_closed_positions()  # Track closed positions for loss recovery
             except Exception as e:
                 logger.error(f"Error in position manager: {e}")
             await asyncio.sleep(1)  # Check every second
@@ -175,19 +174,19 @@ class TradingBot:
             await asyncio.sleep(2)  # Check every 2 seconds
     
     async def daily_goal_monitor_loop(self):
-        """Background loop to monitor daily goal and send notification when reached"""
-        logger.info("Daily goal monitor loop started")
+        """Background loop to monitor daily profit limit and send notification when reached"""
+        logger.info("Daily profit monitor loop started")
         while self.running:
             try:
                 goal_reached, current_percent, pnl_amount = self.trader.get_daily_goal_status()
                 
-                # Send notification only once when goal is reached
+                # Send notification only once when profit limit is reached
                 if goal_reached and not self.trader.daily_goal_notified:
-                    logger.info(f"Daily goal reached! Sending notification...")
+                    logger.info(f"Daily profit limit reached! Sending notification...")
                     if self.discord_bot:
                         await self.discord_bot.send_daily_goal_notification(
                             current_percent, 
-                            self.config.daily_goal_percent,
+                            self.config.max_daily_profit_percent,
                             pnl_amount
                         )
                         self.trader.daily_goal_notified = True
@@ -216,8 +215,8 @@ class TradingBot:
                    f"(Activate: {self.config.break_even_at_pips} pips, Offset: {self.config.break_even_offset_pips} pips)")
         logger.info(f"Trailing Stop: {'Enabled' if self.config.use_trailing_stop else 'Disabled'} "
                    f"(Start: {self.config.trailing_start_pips} pips, Step: {self.config.trailing_step_pips} pips)")
-        logger.info(f"Daily Goal: {'Enabled' if self.config.use_daily_goal else 'Disabled'} "
-                   f"(Target: {self.config.daily_goal_percent}%)")
+        logger.info(f"Daily Limits: {'Enabled' if self.config.use_daily_limits else 'Disabled'} "
+                   f"(Loss: {self.config.max_daily_loss_percent}%, Profit: {self.config.max_daily_profit_percent}%, Max Trades: {self.config.max_daily_trades})")
         
         if self.mode == "master":
             logger.info("Mode: MASTER - Sending signals & managing positions")

@@ -122,10 +122,10 @@ class DashboardTab:
                     pnl_percent = (pnl / daily_start) * 100
                     color = self.main_window.accent_green if pnl >= 0 else self.main_window.accent_red
                     
-                    # Check if daily goal is enabled and reached
+                    # Check if daily profit limit is enabled and reached
                     goal_text = ""
-                    if bot.trader.config.use_daily_goal:
-                        goal_percent = bot.trader.config.daily_goal_percent
+                    if bot.trader.config.use_daily_limits:
+                        goal_percent = bot.trader.config.max_daily_profit_percent
                         if pnl_percent >= goal_percent:
                             goal_text = " 🎯 GOAL!"
                             color = self.main_window.accent_green

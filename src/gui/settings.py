@@ -97,6 +97,23 @@ class SettingsTab:
         
         tk.Label(risk_card, text="", bg=self.main_window.bg_card).pack(pady=4)
         
+        # Daily Limits
+        dl_card = self._create_card(left_col, "Daily Limits")
+        
+        self.entries['use_daily_limits'] = self._add_checkbox_row(dl_card, "Enabled", self.config.use_daily_limits)
+        self.entries['max_daily_loss_percent'] = self._add_editable_row(dl_card, "Max Daily Loss (%)", str(self.config.max_daily_loss_percent))
+        self.entries['max_daily_profit_percent'] = self._add_editable_row(dl_card, "Max Daily Profit (%)", str(self.config.max_daily_profit_percent))
+        self.entries['max_daily_trades'] = self._add_editable_row(dl_card, "Max Daily Trades", str(self.config.max_daily_trades))
+        
+        # Add info label
+        info_label = tk.Label(dl_card, 
+                             text="💡 Bot stops trading when limits are reached",
+                             bg=self.main_window.bg_card, fg=self.main_window.text_secondary,
+                             font=(self.main_window.font_family, 7), justify=tk.LEFT)
+        info_label.pack(fill=tk.X, padx=12, pady=(0, 8))
+        
+        tk.Label(dl_card, text="", bg=self.main_window.bg_card).pack(pady=4)
+        
         # Break-Even Settings
         be_card = self._create_card(left_col, "Break-Even Settings")
         
@@ -105,29 +122,6 @@ class SettingsTab:
         self.entries['break_even_offset'] = self._add_editable_row(be_card, "Offset (pips)", str(self.config.break_even_offset_pips))
         
         tk.Label(be_card, text="", bg=self.main_window.bg_card).pack(pady=4)
-        
-        # Daily Goal Settings
-        dg_card = self._create_card(left_col, "Daily Goal Settings")
-        
-        self.entries['use_daily_goal'] = self._add_checkbox_row(dg_card, "Enabled", self.config.use_daily_goal)
-        self.entries['daily_goal_percent'] = self._add_editable_row(dg_card, "Daily Goal (%)", str(self.config.daily_goal_percent))
-        
-        tk.Label(dg_card, text="", bg=self.main_window.bg_card).pack(pady=4)
-        
-        # Loss Recovery Settings
-        lr_card = self._create_card(left_col, "Loss Recovery Settings")
-        
-        self.entries['use_loss_recovery'] = self._add_checkbox_row(lr_card, "Enabled", self.config.use_loss_recovery)
-        self.entries['recovery_pips'] = self._add_editable_row(lr_card, "Recovery Target (pips)", str(self.config.recovery_pips))
-        
-        # Add info label
-        info_label = tk.Label(lr_card, 
-                             text="💡 Automatically increases lot size to recover losses\nat the recovery target",
-                             bg=self.main_window.bg_card, fg=self.main_window.text_secondary,
-                             font=(self.main_window.font_family, 7), justify=tk.LEFT)
-        info_label.pack(fill=tk.X, padx=12, pady=(0, 8))
-        
-        tk.Label(lr_card, text="", bg=self.main_window.bg_card).pack(pady=4)
         
         # RIGHT COLUMN
         
@@ -158,6 +152,31 @@ class SettingsTab:
         self.entries['spread_crypto'] = self._add_editable_row(spread_card, "Crypto", str(self.config.max_spread_crypto))
         
         tk.Label(spread_card, text="", bg=self.main_window.bg_card).pack(pady=4)
+        
+        # Trading Sessions
+        sessions_card = self._create_card(right_col, "Trading Sessions (Philippines Time)")
+        
+        # Add info label
+        info_label = tk.Label(sessions_card, 
+                             text="💡 Only read signals during selected sessions",
+                             bg=self.main_window.bg_card, fg=self.main_window.text_secondary,
+                             font=(self.main_window.font_family, 7), justify=tk.LEFT)
+        info_label.pack(fill=tk.X, padx=12, pady=(0, 8))
+        
+        # Session checkboxes
+        from src.session_checker import FOREX_SESSIONS
+        self.entries['sessions'] = {}
+        
+        for session_name, session in FOREX_SESSIONS.items():
+            is_enabled = session_name in self.config.enabled_sessions
+            self.entries['sessions'][session_name] = self._add_session_row(
+                sessions_card, 
+                f"{session.emoji} {session_name}",
+                f"{session.country} • {session.start_time.strftime('%I:%M %p')} - {session.end_time.strftime('%I:%M %p')}",
+                is_enabled
+            )
+        
+        tk.Label(sessions_card, text="", bg=self.main_window.bg_card).pack(pady=4)
     
     def _create_card(self, parent, title):
         """Create a settings card"""
@@ -261,6 +280,38 @@ class SettingsTab:
         
         return var
     
+    def _add_session_row(self, parent, label, description, value):
+        """Add a session checkbox row with description"""
+        row = tk.Frame(parent, bg=self.main_window.bg_card)
+        row.pack(fill=tk.X, padx=12, pady=3)
+        
+        # Left side: label and description
+        left_frame = tk.Frame(row, bg=self.main_window.bg_card)
+        left_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        tk.Label(left_frame, text=label, 
+                bg=self.main_window.bg_card, fg=self.main_window.text_primary,
+                font=(self.main_window.font_family, 8, "bold"), anchor=tk.W).pack(anchor=tk.W)
+        
+        tk.Label(left_frame, text=description, 
+                bg=self.main_window.bg_card, fg=self.main_window.text_secondary,
+                font=(self.main_window.font_family, 7), anchor=tk.W).pack(anchor=tk.W)
+        
+        # Right side: checkbox
+        var = tk.BooleanVar(value=value)
+        
+        # Auto-save on change
+        def on_change():
+            self._auto_save()
+        
+        tk.Checkbutton(row, variable=var,
+                      bg=self.main_window.bg_card,
+                      activebackground=self.main_window.bg_card,
+                      selectcolor=self.main_window.bg_secondary,
+                      command=on_change).pack(side=tk.RIGHT)
+        
+        return var
+    
     def _auto_save(self):
         """Auto-save settings when changed"""
         try:
@@ -271,6 +322,10 @@ class SettingsTab:
             if not env_path.exists():
                 env_path = Path(".env")
             
+            # Get enabled sessions
+            enabled_sessions = [name for name, var in self.entries.get('sessions', {}).items() if var.get()]
+            sessions_str = ",".join(enabled_sessions)
+            
             # Update config values
             updates = {
                 'MT5_PATH': self.entries['mt5_path'].get(),
@@ -278,13 +333,13 @@ class SettingsTab:
                 'MIN_LOT': self.entries['min_lot'].get(),
                 'MAX_LOT': self.entries['max_lot'].get(),
                 'MAX_OPEN_TRADES': self.entries['max_open_trades'].get(),
+                'USE_DAILY_LIMITS': 'true' if self.entries['use_daily_limits'].get() else 'false',
+                'MAX_DAILY_LOSS_PERCENT': self.entries['max_daily_loss_percent'].get(),
+                'MAX_DAILY_PROFIT_PERCENT': self.entries['max_daily_profit_percent'].get(),
+                'MAX_DAILY_TRADES': self.entries['max_daily_trades'].get(),
                 'USE_BREAK_EVEN': 'true' if self.entries['use_break_even'].get() else 'false',
                 'BREAK_EVEN_AT_PIPS': self.entries['break_even_at'].get(),
                 'BREAK_EVEN_OFFSET_PIPS': self.entries['break_even_offset'].get(),
-                'USE_DAILY_GOAL': 'true' if self.entries['use_daily_goal'].get() else 'false',
-                'DAILY_GOAL_PERCENT': self.entries['daily_goal_percent'].get(),
-                'USE_LOSS_RECOVERY': 'true' if self.entries['use_loss_recovery'].get() else 'false',
-                'RECOVERY_PIPS': self.entries['recovery_pips'].get(),
                 'USE_TRAILING_STOP': 'true' if self.entries['use_trailing'].get() else 'false',
                 'TRAILING_START_PIPS': self.entries['trailing_start'].get(),
                 'TRAILING_STEP_PIPS': self.entries['trailing_step'].get(),
@@ -295,6 +350,7 @@ class SettingsTab:
                 'MAX_SPREAD_GOLD': self.entries['spread_gold'].get(),
                 'MAX_SPREAD_INDICES': self.entries['spread_indices'].get(),
                 'MAX_SPREAD_CRYPTO': self.entries['spread_crypto'].get(),
+                'ENABLED_SESSIONS': sessions_str,
             }
             
             # Read existing .env
@@ -330,13 +386,13 @@ class SettingsTab:
             self.config.min_lot = float(self.entries['min_lot'].get()) if self.entries['min_lot'].get() else 0.01
             self.config.max_lot = float(self.entries['max_lot'].get()) if self.entries['max_lot'].get() else 10.0
             self.config.max_open_trades = int(self.entries['max_open_trades'].get()) if self.entries['max_open_trades'].get() else 3
+            self.config.use_daily_limits = self.entries['use_daily_limits'].get()
+            self.config.max_daily_loss_percent = float(self.entries['max_daily_loss_percent'].get()) if self.entries['max_daily_loss_percent'].get() else 3.0
+            self.config.max_daily_profit_percent = float(self.entries['max_daily_profit_percent'].get()) if self.entries['max_daily_profit_percent'].get() else 5.0
+            self.config.max_daily_trades = int(self.entries['max_daily_trades'].get()) if self.entries['max_daily_trades'].get() else 5
             self.config.use_break_even = self.entries['use_break_even'].get()
             self.config.break_even_at_pips = float(self.entries['break_even_at'].get()) if self.entries['break_even_at'].get() else 10.0
             self.config.break_even_offset_pips = float(self.entries['break_even_offset'].get()) if self.entries['break_even_offset'].get() else 2.0
-            self.config.use_daily_goal = self.entries['use_daily_goal'].get()
-            self.config.daily_goal_percent = float(self.entries['daily_goal_percent'].get()) if self.entries['daily_goal_percent'].get() else 2.0
-            self.config.use_loss_recovery = self.entries['use_loss_recovery'].get()
-            self.config.recovery_pips = float(self.entries['recovery_pips'].get()) if self.entries['recovery_pips'].get() else 100.0
             self.config.use_trailing_stop = self.entries['use_trailing'].get()
             self.config.trailing_start_pips = float(self.entries['trailing_start'].get()) if self.entries['trailing_start'].get() else 15.0
             self.config.trailing_step_pips = float(self.entries['trailing_step'].get()) if self.entries['trailing_step'].get() else 5.0
@@ -344,6 +400,7 @@ class SettingsTab:
             self.config.max_spread_gold = int(self.entries['spread_gold'].get()) if self.entries['spread_gold'].get() else 500
             self.config.max_spread_indices = int(self.entries['spread_indices'].get()) if self.entries['spread_indices'].get() else 300
             self.config.max_spread_crypto = int(self.entries['spread_crypto'].get()) if self.entries['spread_crypto'].get() else 5000
+            self.config.enabled_sessions = enabled_sessions
             
         except Exception as e:
             print(f"Auto-save error: {e}")

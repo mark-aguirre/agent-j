@@ -86,18 +86,21 @@ class TradingConfig:
     break_even_at_pips: float = 300.0
     break_even_offset_pips: float = 100.0
     
-    # Daily Goal
-    use_daily_goal: bool = True
-    daily_goal_percent: float = 5.0
+    # Trading Sessions (Philippines Time UTC+8)
+    enabled_sessions: list = None  # List of enabled session names
     
-    # Loss Recovery
-    use_loss_recovery: bool = False
-    recovery_pips: float = 100.0  # Pips at which recovery should be achieved
-    max_recovery_lots: float = 1.0  # Maximum additional lots for recovery
+    def __post_init__(self):
+        """Initialize default values after dataclass creation"""
+        if self.enabled_sessions is None:
+            self.enabled_sessions = []
 
 def load_config() -> TradingConfig:
     """Load configuration from environment variables"""
     try:
+        # Parse enabled sessions from comma-separated string
+        sessions_str = os.getenv("ENABLED_SESSIONS", "")
+        enabled_sessions = [s.strip() for s in sessions_str.split(",") if s.strip()]
+        
         return TradingConfig(
             discord_token=os.getenv("DISCORD_TOKEN", ""),
             discord_channel_id=safe_int(os.getenv("DISCORD_CHANNEL_ID", "0")),
@@ -115,17 +118,16 @@ def load_config() -> TradingConfig:
             max_spread_gold=safe_int(os.getenv("MAX_SPREAD_GOLD", "500")),
             max_spread_indices=safe_int(os.getenv("MAX_SPREAD_INDICES", "300")),
             max_spread_crypto=safe_int(os.getenv("MAX_SPREAD_CRYPTO", "5000")),
+            use_daily_limits=safe_bool(os.getenv("USE_DAILY_LIMITS", "true")),
+            max_daily_loss_percent=safe_float(os.getenv("MAX_DAILY_LOSS_PERCENT", "3.0")),
+            max_daily_profit_percent=safe_float(os.getenv("MAX_DAILY_PROFIT_PERCENT", "5.0")),
             use_break_even=safe_bool(os.getenv("USE_BREAK_EVEN", "true")),
             break_even_at_pips=safe_float(os.getenv("BREAK_EVEN_AT_PIPS", "300.0")),
             break_even_offset_pips=safe_float(os.getenv("BREAK_EVEN_OFFSET_PIPS", "100.0")),
             use_trailing_stop=safe_bool(os.getenv("USE_TRAILING_STOP", "true")),
             trailing_start_pips=safe_float(os.getenv("TRAILING_START_PIPS", "500.0")),
             trailing_step_pips=safe_float(os.getenv("TRAILING_STEP_PIPS", "100.0")),
-            use_daily_goal=safe_bool(os.getenv("USE_DAILY_GOAL", "true")),
-            daily_goal_percent=safe_float(os.getenv("DAILY_GOAL_PERCENT", "5.0")),
-            use_loss_recovery=safe_bool(os.getenv("USE_LOSS_RECOVERY", "false")),
-            recovery_pips=safe_float(os.getenv("RECOVERY_PIPS", "100.0")),
-            max_recovery_lots=safe_float(os.getenv("MAX_RECOVERY_LOTS", "1.0")),
+            enabled_sessions=enabled_sessions,
         )
     except Exception as e:
         logger.error(f"Error loading config: {e}")
