@@ -125,7 +125,7 @@ def load_config() -> TradingConfig:
             break_even_at_pips=safe_float(os.getenv("BREAK_EVEN_AT_PIPS", "300.0")),
             break_even_offset_pips=safe_float(os.getenv("BREAK_EVEN_OFFSET_PIPS", "100.0")),
             use_trailing_stop=safe_bool(os.getenv("USE_TRAILING_STOP", "true")),
-            trailing_start_pips=safe_float(os.getenv("TRAILING_START_PIPS", "500.0")),
+            trailing_start_pips=safe_float(os.getenv("TRAILING_START_PIPS", "1000.0")),
             trailing_step_pips=safe_float(os.getenv("TRAILING_STEP_PIPS", "100.0")),
             enabled_sessions=enabled_sessions,
         )

@@ -46,14 +46,14 @@ class SettingsTab:
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
         
         container = tk.Frame(scrollable_frame, bg=self.main_window.bg_primary)
-        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        container.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
         
         # Two column layout
         left_col = tk.Frame(container, bg=self.main_window.bg_primary)
-        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
+        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 4))
         
         right_col = tk.Frame(container, bg=self.main_window.bg_primary)
-        right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0))
+        right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(4, 0))
         
         # Store entry widgets
         self.entries = {}
@@ -67,7 +67,7 @@ class SettingsTab:
         
         # Info and Test Connection row (inline)
         action_row = tk.Frame(mt5_card, bg=self.main_window.bg_card)
-        action_row.pack(fill=tk.X, padx=12, pady=(8, 10))
+        action_row.pack(fill=tk.X, padx=8, pady=(6, 8))
         
         tk.Label(action_row, 
                 text="💡 Make sure you're logged into MetaTrader 5",
@@ -110,7 +110,7 @@ class SettingsTab:
                              text="💡 Bot stops trading when limits are reached",
                              bg=self.main_window.bg_card, fg=self.main_window.text_secondary,
                              font=(self.main_window.font_family, 7), justify=tk.LEFT)
-        info_label.pack(fill=tk.X, padx=12, pady=(0, 8))
+        info_label.pack(fill=tk.X, padx=8, pady=(0, 6))
         
         tk.Label(dl_card, text="", bg=self.main_window.bg_card).pack(pady=4)
         
@@ -161,7 +161,7 @@ class SettingsTab:
                              text="💡 Only read signals during selected sessions",
                              bg=self.main_window.bg_card, fg=self.main_window.text_secondary,
                              font=(self.main_window.font_family, 7), justify=tk.LEFT)
-        info_label.pack(fill=tk.X, padx=12, pady=(0, 8))
+        info_label.pack(fill=tk.X, padx=8, pady=(0, 6))
         
         # Session checkboxes
         from src.session_checker import FOREX_SESSIONS
@@ -182,18 +182,18 @@ class SettingsTab:
         """Create a settings card"""
         card = tk.Frame(parent, bg=self.main_window.bg_card, relief=tk.FLAT, bd=1,
                        highlightbackground=self.main_window.border_color, highlightthickness=1)
-        card.pack(fill=tk.X, pady=(0, 8))
+        card.pack(fill=tk.X, pady=(0, 6))
         
         tk.Label(card, text=title, 
                 bg=self.main_window.bg_card, fg=self.main_window.text_primary,
-                font=(self.main_window.font_family, 9, "bold")).pack(anchor=tk.W, padx=12, pady=(10, 8))
+                font=(self.main_window.font_family, 9, "bold")).pack(anchor=tk.W, padx=8, pady=(8, 6))
         
         return card
     
     def _add_editable_row(self, parent, label, value):
         """Add an editable setting row"""
         row = tk.Frame(parent, bg=self.main_window.bg_card)
-        row.pack(fill=tk.X, padx=12, pady=3)
+        row.pack(fill=tk.X, padx=8, pady=2)
         
         tk.Label(row, text=label, 
                 bg=self.main_window.bg_card, fg=self.main_window.text_secondary,
@@ -216,7 +216,7 @@ class SettingsTab:
     def _add_path_row(self, parent, label, value):
         """Add a path entry row with browse button"""
         row = tk.Frame(parent, bg=self.main_window.bg_card)
-        row.pack(fill=tk.X, padx=12, pady=3)
+        row.pack(fill=tk.X, padx=8, pady=2)
         
         tk.Label(row, text=label, 
                 bg=self.main_window.bg_card, fg=self.main_window.text_secondary,
@@ -260,7 +260,7 @@ class SettingsTab:
     def _add_checkbox_row(self, parent, label, value):
         """Add a checkbox row"""
         row = tk.Frame(parent, bg=self.main_window.bg_card)
-        row.pack(fill=tk.X, padx=12, pady=3)
+        row.pack(fill=tk.X, padx=8, pady=2)
         
         tk.Label(row, text=label, 
                 bg=self.main_window.bg_card, fg=self.main_window.text_secondary,
@@ -283,7 +283,7 @@ class SettingsTab:
     def _add_session_row(self, parent, label, description, value):
         """Add a session checkbox row with description"""
         row = tk.Frame(parent, bg=self.main_window.bg_card)
-        row.pack(fill=tk.X, padx=12, pady=3)
+        row.pack(fill=tk.X, padx=8, pady=2)
         
         # Left side: label and description
         left_frame = tk.Frame(row, bg=self.main_window.bg_card)

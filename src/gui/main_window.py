@@ -9,9 +9,10 @@ import logging
 import asyncio
 import hashlib
 import sys
+from dotenv import load_dotenv
 
 from src.__version__ import __version__, __app_name__
-from src.config import TradingConfig
+from src.config import TradingConfig, load_config
 from src.gui.dashboard import DashboardTab
 from src.gui.positions import PositionsTab
 from src.gui.logs import LogsTab
@@ -404,6 +405,13 @@ class MainWindow:
     def _start_bot(self):
         """Start the trading bot"""
         try:
+            # Reload .env file to get latest configuration
+            load_dotenv(override=True)
+            
+            # Reload configuration from environment variables
+            self.config = load_config()
+            logging.info("Configuration reloaded from .env file")
+            
             mode = self.mode_var.get()
             
             # Validate config
