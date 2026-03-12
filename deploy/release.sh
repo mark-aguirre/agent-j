@@ -98,14 +98,6 @@ main() {
     
     echo -e "New version: ${GREEN}${new_version}${NC}\n"
     
-    # Confirm
-    read -p "Continue with release v${new_version}? (y/n) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Release cancelled"
-        exit 0
-    fi
-    
     # Update version file
     echo -e "\n${YELLOW}[1/5]${NC} Updating version file..."
     update_version_file "$new_version"
@@ -133,14 +125,8 @@ main() {
     
     # Push to remote
     echo -e "\n${YELLOW}[6/7]${NC} Pushing to remote..."
-    read -p "Push to GitHub now? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        git push && git push --tags
-        echo -e "${GREEN}✓${NC} Pushed changes and tags"
-    else
-        echo -e "${YELLOW}⚠${NC} Skipped push - remember to run: git push && git push --tags"
-    fi
+    git push && git push --tags
+    echo -e "${GREEN}✓${NC} Pushed changes and tags"
     
     # Create GitHub release
     echo -e "\n${YELLOW}[7/7]${NC} Creating GitHub release..."

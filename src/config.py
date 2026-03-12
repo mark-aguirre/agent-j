@@ -123,7 +123,7 @@ def load_config() -> TradingConfig:
             max_daily_profit_percent=safe_float(os.getenv("MAX_DAILY_PROFIT_PERCENT", "5.0")),
             use_break_even=safe_bool(os.getenv("USE_BREAK_EVEN", "true")),
             break_even_at_pips=safe_float(os.getenv("BREAK_EVEN_AT_PIPS", "300.0")),
-            break_even_offset_pips=safe_float(os.getenv("BREAK_EVEN_OFFSET_PIPS", "100.0")),
+            break_even_offset_pips=safe_float(os.getenv("BREAK_EVEN_OFFSET_PIPS", "200.0")),
             use_trailing_stop=safe_bool(os.getenv("USE_TRAILING_STOP", "true")),
             trailing_start_pips=safe_float(os.getenv("TRAILING_START_PIPS", "1000.0")),
             trailing_step_pips=safe_float(os.getenv("TRAILING_STEP_PIPS", "100.0")),
