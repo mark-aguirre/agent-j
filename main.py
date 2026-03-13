@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 from src.__version__ import __version__, __app_name__
 from src.config import load_config, TradingConfig
-from src.signal_parser import TradingSignal, OrderModification
+from src.signal_parser import TradingSignal, OrderModification, OrderClose
 from src.mt5_trader import MT5Trader
 from src.discord_bot import TradingDiscordBot
 
@@ -71,6 +71,10 @@ class TradingBot:
             logger.info(f"Entry: {signal.entry_price}")
             logger.info(f"SL: {signal.stop_loss} ({signal.sl_pips:.1f} pips)")
             logger.info(f"TP: {signal.take_profit} ({signal.tp_pips:.1f} pips)")
+            if signal.trade_id:
+                logger.info(f"Master Trade ID: {signal.trade_id}")
+            else:
+                logger.warning(f"NO TRADE ID IN SIGNAL!")
             logger.info("=" * 50)
             
             # Execute the trade
@@ -78,16 +82,62 @@ class TradingBot:
             
             if result.success:
                 logger.info(f"[OK] Trade executed! Ticket: {result.ticket} | Lot: {result.lot_size}")
+                if signal.trade_id:
+                    logger.info(f"Linked to master trade: {signal.trade_id}")
             else:
                 logger.error(f"[FAILED] Trade failed: {result.message}")
         except Exception as e:
             logger.error(f"Error processing signal: {e}")
     
+    def on_close_received(self, close_order: OrderClose):
+        """Callback when Discord close order is received"""
+        try:
+            logger.info("=" * 50)
+            logger.info(f"CLOSE ORDER RECEIVED: {close_order.trade_id}")
+            logger.info("=" * 50)
+            
+            client_ticket = None
+            
+            # Strategy 1: Try to find by master trade ID in comment
+            logger.info(f"Searching for order with master trade ID {close_order.trade_id} in comment...")
+            client_ticket = self.trader.find_order_by_master_trade_id(close_order.trade_id)
+            
+            # Strategy 2: Try to find by master ticket in comment (fallback)
+            if not client_ticket:
+                logger.info(f"Searching for order with master ticket {close_order.ticket} in comment...")
+                client_ticket = self.trader.find_order_by_master_ticket(close_order.ticket)
+            
+            if client_ticket:
+                logger.info(f"Found client order: {client_ticket}")
+                
+                # Check if it's a position or pending order
+                import MetaTrader5 as mt5
+                positions = mt5.positions_get(ticket=client_ticket)
+                if positions:
+                    # Close position
+                    success = self.trader.close_position(client_ticket)
+                    if success:
+                        logger.info(f"[OK] Position {client_ticket} closed successfully")
+                    else:
+                        logger.error(f"[FAILED] Failed to close position {client_ticket}")
+                else:
+                    # Cancel pending order
+                    success = self.trader.cancel_order(client_ticket)
+                    if success:
+                        logger.info(f"[OK] Pending order {client_ticket} cancelled successfully")
+                    else:
+                        logger.error(f"[FAILED] Failed to cancel pending order {client_ticket}")
+            else:
+                logger.warning(f"[NOT FOUND] No matching order found for {close_order.trade_id}")
+                
+        except Exception as e:
+            logger.error(f"Error processing close order: {e}")
+    
     def on_modification_received(self, modification: OrderModification):
         """Callback when Discord order modification is received"""
         try:
             logger.info("=" * 50)
-            logger.info(f"MODIFICATION RECEIVED: Ticket #{modification.ticket}")
+            logger.info(f"MODIFICATION RECEIVED: {modification.trade_id if modification.trade_id else f'Ticket #{modification.ticket}'}")
             logger.info(f"Symbol: {modification.symbol} | Type: {modification.order_type}")
             logger.info(f"Entry: {modification.entry_price}")
             logger.info(f"SL: {modification.stop_loss}")
@@ -98,13 +148,19 @@ class TradingBot:
             
             client_ticket = None
             
-            # Strategy 1: Try to find by master ticket in comment
-            logger.info(f"Searching for order with master ticket {modification.ticket} in comment...")
-            client_ticket = self.trader.find_order_by_master_ticket(modification.ticket)
+            # Strategy 1: Try to find by master trade ID in comment
+            if modification.trade_id:
+                logger.info(f"Searching for order with master trade ID {modification.trade_id} in comment...")
+                client_ticket = self.trader.find_order_by_master_trade_id(modification.trade_id)
             
-            # Strategy 2: If not found, search by symbol, order type, and entry price
+            # Strategy 2: Try to find by master ticket in comment (fallback)
             if not client_ticket:
-                logger.info(f"Master ticket not found in comments, searching by symbol/type/entry...")
+                logger.info(f"Searching for order with master ticket {modification.ticket} in comment...")
+                client_ticket = self.trader.find_order_by_master_ticket(modification.ticket)
+            
+            # Strategy 3: If not found, search by symbol, order type, and entry price
+            if not client_ticket:
+                logger.info(f"Master reference not found in comments, searching by symbol/type/entry...")
                 client_ticket = self.trader.find_order_by_symbol_ordertype_and_entry(
                     modification.symbol, 
                     modification.order_type,
@@ -118,7 +174,7 @@ class TradingBot:
                     entry=modification.entry_price,
                     sl=modification.stop_loss,
                     tp=modification.take_profit,
-                    master_ticket=modification.ticket  # Store master ticket in comment
+                    master_trade_id=modification.trade_id  # Store master trade ID in comment
                 )
                 
                 if success:
@@ -235,9 +291,14 @@ class TradingBot:
         
         if self.mode == "master":
             # MASTER MODE: Monitor MT5 orders and send signals to Discord
-            # Initialize Discord bot for sending signals
-            self.discord_bot = TradingDiscordBot(self.config, None, 
-                                                 on_ready_callback=lambda: setattr(self, 'discord_ready', True))
+            # Initialize Discord bot for sending signals (no callbacks needed in master mode)
+            self.discord_bot = TradingDiscordBot(
+                self.config, 
+                on_signal=None,
+                on_modification=None,
+                on_close=None,
+                on_ready_callback=lambda: setattr(self, 'discord_ready', True)
+            )
             order_monitor_task = None
             discord_task = None
             
@@ -282,6 +343,7 @@ class TradingBot:
                 self.config, 
                 self.on_signal_received,
                 self.on_modification_received,
+                self.on_close_received,
                 on_ready_callback=lambda: setattr(self, 'discord_ready', True)
             )
             

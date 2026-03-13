@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import logging
 import json
 import os
+import re
 from pathlib import Path
 
 from src.config import TradingConfig, RiskMode
@@ -36,6 +37,30 @@ class MT5Trader:
         self.auto_modified_tickets = set()  # Track tickets modified by bot (trailing/breakeven)
         self.recent_signals = {}  # Track recent signals to prevent duplicates: {signal_hash: timestamp}
         self.daily_goal_notified = False  # Track if daily goal notification was sent
+        self.trade_id_map = {}  # Map client ticket to master trade ID: {client_ticket: master_trade_id}
+        self.trade_id_map_file = Path("trade_id_mapping.json")  # Persistent storage
+        self._load_trade_id_map()
+    
+    def _load_trade_id_map(self):
+        """Load trade ID mapping from file"""
+        try:
+            if self.trade_id_map_file.exists():
+                with open(self.trade_id_map_file, 'r') as f:
+                    # JSON keys are strings, convert back to int
+                    data = json.load(f)
+                    self.trade_id_map = {int(k): v for k, v in data.items()}
+                    logger.info(f"Loaded {len(self.trade_id_map)} trade ID mappings from file")
+        except Exception as e:
+            logger.error(f"Error loading trade ID map: {e}")
+            self.trade_id_map = {}
+    
+    def _save_trade_id_map(self):
+        """Save trade ID mapping to file"""
+        try:
+            with open(self.trade_id_map_file, 'w') as f:
+                json.dump(self.trade_id_map, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving trade ID map: {e}")
     
     def connect(self) -> bool:
         """Initialize connection to MT5"""
@@ -426,6 +451,13 @@ class MT5Trader:
                 logger.warning(f"Duplicate order detected right before placement: {symbol} {signal.order_type.value} @ {price}")
                 return TradeResult(success=False, message=f"Duplicate order exists (ticket: {existing_order})")
             
+            # Prepare comment with master trade ID if provided
+            comment = self.config.trade_comment
+            if signal.trade_id:
+                comment = f"{comment} {signal.trade_id}".strip()
+                logger.info(f"Adding master trade ID to comment: {signal.trade_id}")
+                logger.info(f"Final comment will be: '{comment}'")
+            
             # Prepare request
             request = {
                 "action": mt5.TRADE_ACTION_DEAL if signal.order_type in [OrderType.BUY, OrderType.SELL] else mt5.TRADE_ACTION_PENDING,
@@ -437,7 +469,7 @@ class MT5Trader:
                 "tp": tp,
                 "deviation": self.config.max_slippage_points,
                 "magic": self.config.magic_number,
-                "comment": self.config.trade_comment,
+                "comment": comment,
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
@@ -460,6 +492,14 @@ class MT5Trader:
                 if result.retcode == mt5.TRADE_RETCODE_DONE:
                     self.daily_trade_count += 1
                     logger.info(f"Trade executed: {signal.order_type.value} {symbol} | Lot: {lot_size} | SL: {sl_price_diff}")
+                    logger.info(f"Order placed with comment: '{comment}'")
+                    
+                    # Store the master trade ID mapping if provided
+                    if signal.trade_id:
+                        self.trade_id_map[result.order] = signal.trade_id
+                        self._save_trade_id_map()
+                        logger.info(f"Stored trade ID mapping: {result.order} -> {signal.trade_id}")
+                    
                     return TradeResult(
                         success=True,
                         ticket=result.order,
@@ -741,7 +781,7 @@ class MT5Trader:
     
     def modify_order(self, ticket: int, entry: Optional[float] = None, 
                      sl: Optional[float] = None, tp: Optional[float] = None,
-                     master_ticket: Optional[int] = None) -> bool:
+                     master_ticket: Optional[int] = None, master_trade_id: Optional[str] = None) -> bool:
         """Modify an existing position or pending order
         
         Args:
@@ -749,7 +789,8 @@ class MT5Trader:
             entry: New entry price (pending orders only)
             sl: New stop loss
             tp: New take profit
-            master_ticket: Master's ticket number to store in comment (for client mode)
+            master_ticket: Master's ticket number to store in comment (for client mode) - DEPRECATED
+            master_trade_id: Master's trade ID to store in comment (for client mode) - PREFERRED
         """
         try:
             # First check if it's a position
@@ -799,11 +840,19 @@ class MT5Trader:
                 new_sl = round(sl, digits) if sl is not None else order.sl
                 new_tp = round(tp, digits) if tp is not None else order.tp
                 
-                # Update comment with master ticket if provided
+                # Update comment with master trade ID if provided
                 new_comment = order.comment
-                if master_ticket:
-                    new_comment = f"Master#{master_ticket}"
-                    logger.info(f"Storing master ticket {master_ticket} in comment")
+                if master_trade_id:
+                    # Remove old Master# reference if exists
+                    if "Master#" in new_comment:
+                        new_comment = re.sub(r'Master#\d+', '', new_comment).strip()
+                    new_comment = f"{new_comment} {master_trade_id}".strip()
+                    logger.info(f"Storing master trade ID {master_trade_id} in comment")
+                elif master_ticket:
+                    # Fallback to old format
+                    if "Master#" not in new_comment:
+                        new_comment = f"{new_comment} Master#{master_ticket}".strip()
+                        logger.info(f"Storing master ticket {master_ticket} in comment")
                 
                 request = {
                     "action": mt5.TRADE_ACTION_MODIFY,
@@ -905,8 +954,59 @@ class MT5Trader:
             logger.error(f"Error finding order by symbol/type/entry: {e}")
             return None
     
+    def find_order_by_master_trade_id(self, master_trade_id: str) -> Optional[int]:
+        """Find a client order by master trade ID stored in comment (e.g., 'ID#12345')"""
+        try:
+            # First, check our internal mapping (most reliable)
+            for client_ticket, stored_trade_id in self.trade_id_map.items():
+                if stored_trade_id == master_trade_id:
+                    # Verify the order/position still exists
+                    positions = mt5.positions_get(ticket=client_ticket)
+                    if positions:
+                        logger.info(f"Found position {client_ticket} with master trade ID {master_trade_id} (from mapping)")
+                        return client_ticket
+                    
+                    orders = mt5.orders_get(ticket=client_ticket)
+                    if orders:
+                        logger.info(f"Found order {client_ticket} with master trade ID {master_trade_id} (from mapping)")
+                        return client_ticket
+                    
+                    # Order no longer exists, remove from mapping
+                    del self.trade_id_map[client_ticket]
+            
+            # Fallback: Check pending orders comments
+            orders = mt5.orders_get()
+            if orders:
+                for order in orders:
+                    if order.magic == self.config.magic_number:
+                        if order.comment and master_trade_id in order.comment:
+                            logger.info(f"Found order {order.ticket} with master trade ID {master_trade_id} (from comment)")
+                            # Store in mapping for future lookups
+                            self.trade_id_map[order.ticket] = master_trade_id
+                            self._save_trade_id_map()
+                            return order.ticket
+            
+            # Fallback: Check positions comments
+            positions = mt5.positions_get()
+            if positions:
+                for pos in positions:
+                    if pos.magic == self.config.magic_number:
+                        if pos.comment and master_trade_id in pos.comment:
+                            logger.info(f"Found position {pos.ticket} with master trade ID {master_trade_id} (from comment)")
+                            # Store in mapping for future lookups
+                            self.trade_id_map[pos.ticket] = master_trade_id
+                            self._save_trade_id_map()
+                            return pos.ticket
+            
+            logger.warning(f"No order found with master trade ID {master_trade_id}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error finding order by master trade ID: {e}")
+            return None
+    
     def find_order_by_master_ticket(self, master_ticket: int) -> Optional[int]:
-        """Find a client order by master ticket stored in comment"""
+        """Find a client order by master ticket stored in comment (DEPRECATED - use find_order_by_master_trade_id)"""
         try:
             # Check pending orders
             orders = mt5.orders_get()
@@ -972,6 +1072,48 @@ class MT5Trader:
         new_orders = []
         
         try:
+            # Check for closed/cancelled orders first
+            closed_tickets = []
+            for ticket in list(self.known_orders):
+                # Check if order still exists
+                position_exists = False
+                order_exists = False
+                
+                positions = mt5.positions_get(ticket=ticket)
+                if positions:
+                    position_exists = True
+                
+                orders = mt5.orders_get(ticket=ticket)
+                if orders:
+                    order_exists = True
+                
+                # If neither exists, the order was closed/cancelled
+                if not position_exists and not order_exists:
+                    closed_tickets.append(ticket)
+                    logger.info(f"Order {ticket} was closed/cancelled")
+            
+            # Return closed orders info for notification
+            for ticket in closed_tickets:
+                # Get info from snapshot before removing
+                if ticket in self.order_snapshots:
+                    snapshot = self.order_snapshots[ticket]
+                    
+                    # Try to get trade ID from history
+                    trade_id = f"ID#{ticket}"
+                    
+                    closed_info = {
+                        'ticket': ticket,
+                        'trade_id': trade_id,
+                        'is_closed': True,
+                        'action': 'CLOSE'
+                    }
+                    new_orders.append(closed_info)
+                    
+                    # Clean up
+                    del self.order_snapshots[ticket]
+                    self.known_orders.remove(ticket)
+                    self.auto_modified_tickets.discard(ticket)
+            
             # Check positions
             positions = mt5.positions_get()
             if positions:
@@ -987,6 +1129,30 @@ class MT5Trader:
                             'volume': pos.volume
                         }
                         
+                        # Generate unique trade ID and add to comment if not already present
+                        trade_id = f"ID#{pos.ticket}"
+                        current_comment = pos.comment if pos.comment else ""
+                        
+                        # Only add ID if it's not already in the comment
+                        if "ID#" not in current_comment:
+                            new_comment = f"{current_comment} {trade_id}".strip()
+                            
+                            # Modify the position to add the trade ID
+                            request = {
+                                "action": mt5.TRADE_ACTION_SLTP,
+                                "position": pos.ticket,
+                                "sl": pos.sl,
+                                "tp": pos.tp,
+                                "comment": new_comment,
+                            }
+                            
+                            result = mt5.order_send(request)
+                            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                                logger.info(f"Added trade ID to position {pos.ticket}: {trade_id}")
+                                current_comment = new_comment
+                            else:
+                                logger.warning(f"Failed to add trade ID to position {pos.ticket}")
+                        
                         order_info = {
                             'ticket': pos.ticket,
                             'type': 'BUY' if pos.type == mt5.POSITION_TYPE_BUY else 'SELL',
@@ -997,10 +1163,11 @@ class MT5Trader:
                             'tp': pos.tp,
                             'time': datetime.fromtimestamp(pos.time).strftime('%Y-%m-%d %H:%M:%S'),
                             'profit': pos.profit,
-                            'comment': pos.comment
+                            'comment': current_comment,
+                            'trade_id': trade_id
                         }
                         new_orders.append(order_info)
-                        logger.info(f"New position detected: {pos.ticket} - {pos.symbol}")
+                        logger.info(f"New position detected: {pos.ticket} - {pos.symbol} [{trade_id}]")
             
             # Check pending orders
             orders = mt5.orders_get()
@@ -1016,6 +1183,32 @@ class MT5Trader:
                             'tp': order.tp,
                             'volume': order.volume_initial
                         }
+                        
+                        # Generate unique trade ID and add to comment if not already present
+                        trade_id = f"ID#{order.ticket}"
+                        current_comment = order.comment if order.comment else ""
+                        
+                        # Only add ID if it's not already in the comment
+                        if "ID#" not in current_comment:
+                            new_comment = f"{current_comment} {trade_id}".strip()
+                            
+                            # Modify the pending order to add the trade ID
+                            request = {
+                                "action": mt5.TRADE_ACTION_MODIFY,
+                                "order": order.ticket,
+                                "price": order.price_open,
+                                "sl": order.sl,
+                                "tp": order.tp,
+                                "comment": new_comment,
+                                "type_time": mt5.ORDER_TIME_GTC,
+                            }
+                            
+                            result = mt5.order_send(request)
+                            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                                logger.info(f"Added trade ID to pending order {order.ticket}: {trade_id}")
+                                current_comment = new_comment
+                            else:
+                                logger.warning(f"Failed to add trade ID to pending order {order.ticket}")
                         
                         order_type_map = {
                             mt5.ORDER_TYPE_BUY_LIMIT: 'BUY LIMIT',
@@ -1036,10 +1229,11 @@ class MT5Trader:
                             'tp': order.tp,
                             'time': datetime.fromtimestamp(order.time_setup).strftime('%Y-%m-%d %H:%M:%S'),
                             'profit': 0.0,
-                            'comment': order.comment
+                            'comment': current_comment,
+                            'trade_id': trade_id
                         }
                         new_orders.append(order_info)
-                        logger.info(f"New pending order detected: {order.ticket} - {order.symbol}")
+                        logger.info(f"New pending order detected: {order.ticket} - {order.symbol} [{trade_id}]")
             
         except Exception as e:
             logger.error(f"Error checking for new orders: {e}")

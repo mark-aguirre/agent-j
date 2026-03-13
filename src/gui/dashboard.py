@@ -18,7 +18,7 @@ class DashboardTab:
         container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # Top row - Main metrics
-        top_row = tk.Frame(container, bg=self.main_window.bg_primary)
+        top_row = tk.Frame(self.frame, bg=self.main_window.bg_primary)
         top_row.pack(fill=tk.X, pady=(0, 8))
         
         # Balance
@@ -50,26 +50,48 @@ class DashboardTab:
         trades_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0))
         self.trades_label = trades_card.winfo_children()[1]
         
-        # Config section
-        config_card = tk.Frame(container, bg=self.main_window.bg_card, relief=tk.FLAT)
-        config_card.pack(fill=tk.BOTH, expand=True)
+        # Config section (will be populated dynamically)
+        self.config_card = tk.Frame(container, bg=self.main_window.bg_card, relief=tk.FLAT)
+        self.config_card.pack(fill=tk.BOTH, expand=True)
         
-        tk.Label(config_card, text="Configuration", 
+        # Initial config display
+        self.refresh_config()
+    
+    def refresh_config(self):
+        """Refresh configuration display"""
+        # Clear existing config items
+        for widget in self.config_card.winfo_children():
+            widget.destroy()
+        
+        tk.Label(self.config_card, text="Configuration", 
                 bg=self.main_window.bg_card, fg=self.main_window.text_primary,
                 font=(self.main_window.font_family, 10, "bold")).pack(anchor=tk.W, padx=12, pady=(10, 8))
         
         config = self.main_window.config
         
         config_items = [
-            ("Risk Mode", config.risk_mode.value),
-            ("Risk Per Trade", f"{config.risk_percent}%"),
-            ("Max Open Trades", str(config.max_open_trades)),
-            ("Break-Even", "Enabled" if config.use_break_even else "Disabled"),
-            ("Trailing Stop", "Enabled" if config.use_trailing_stop else "Disabled"),
+            ("Risk Mode", config.risk_mode.value.replace('_', ' ').title()),
         ]
         
+        # Add risk-specific info
+        if config.risk_mode.value == "risk_percent":
+            config_items.append(("Risk Per Trade", f"{config.risk_percent}%"))
+        elif config.risk_mode.value == "fixed_lot":
+            config_items.append(("Fixed Lot Size", f"{config.fixed_lot}"))
+        elif config.risk_mode.value == "fixed_money":
+            config_items.append(("Fixed Money Risk", f"${config.fixed_money_risk}"))
+        
+        config_items.extend([
+            ("Lot Range", f"{config.min_lot} - {config.max_lot}"),
+            ("Max Open Trades", str(config.max_open_trades)),
+            ("Max Daily Trades", str(config.max_daily_trades)),
+            ("Break-Even", f"{'✓' if config.use_break_even else '✗'} {config.break_even_at_pips}p / {config.break_even_offset_pips}p"),
+            ("Trailing Stop", f"{'✓' if config.use_trailing_stop else '✗'} {config.trailing_start_pips}p / {config.trailing_step_pips}p"),
+            ("Daily Limits", f"{'✓' if config.use_daily_limits else '✗'} -{config.max_daily_loss_percent}% / +{config.max_daily_profit_percent}%"),
+        ])
+        
         for label, value in config_items:
-            row = tk.Frame(config_card, bg=self.main_window.bg_card)
+            row = tk.Frame(self.config_card, bg=self.main_window.bg_card)
             row.pack(fill=tk.X, padx=12, pady=3)
             
             tk.Label(row, text=label, 
@@ -80,7 +102,7 @@ class DashboardTab:
                     bg=self.main_window.bg_card, fg=self.main_window.text_primary,
                     font=(self.main_window.font_family, 8, "bold")).pack(side=tk.RIGHT)
         
-        tk.Label(config_card, text="", bg=self.main_window.bg_card).pack(pady=6)
+        tk.Label(self.config_card, text="", bg=self.main_window.bg_card).pack(pady=6)
     
     def _create_card(self, parent, title, value, color, large=False):
         """Create a metric card"""

@@ -6,7 +6,7 @@ import logging
 from typing import Callable
 
 from src.config import TradingConfig
-from src.signal_parser import SignalParser, TradingSignal, OrderModification
+from src.signal_parser import SignalParser, TradingSignal, OrderModification, OrderClose
 from src.session_checker import SessionChecker
 
 logger = logging.getLogger(__name__)
@@ -15,7 +15,9 @@ class TradingDiscordBot(discord.Client):
     """Discord bot that monitors for trading signals"""
     
     def __init__(self, config: TradingConfig, on_signal: Callable[[TradingSignal], None], 
-                 on_modification: Callable[[OrderModification], None] = None, on_ready_callback=None):
+                 on_modification: Callable[[OrderModification], None] = None, 
+                 on_close: Callable = None,
+                 on_ready_callback=None):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guilds = True
@@ -25,6 +27,7 @@ class TradingDiscordBot(discord.Client):
         self.config = config
         self.on_signal = on_signal
         self.on_modification = on_modification
+        self.on_close = on_close
         self.on_ready_callback = on_ready_callback
         self.parser = SignalParser()
         self.session_checker = SessionChecker(config.enabled_sessions)
@@ -51,7 +54,7 @@ class TradingDiscordBot(discord.Client):
             logger.error(f"Error in on_ready: {e}")
     
     async def send_order_notification(self, order_info: dict):
-        """Send notification about new MT5 order or order modification"""
+        """Send notification about new MT5 order, order modification, or order closure"""
         try:
             # Wait for bot to be ready
             logger.info(f"Attempting to send notification for order: {order_info.get('ticket', 'unknown')}")
@@ -72,17 +75,29 @@ class TradingDiscordBot(discord.Client):
             else:
                 logger.info(f"Channel found in cache: {channel.name if hasattr(channel, 'name') else channel.id}")
             
-            # Format the message
+            # Check if this is a close action
+            if order_info.get('is_closed', False):
+                trade_id = order_info.get('trade_id', f"ID#{order_info.get('ticket')}")
+                message = f"""🔴 CLOSE ORDER - {trade_id}
+Action: CLOSE
+Trade ID: {trade_id}"""
+                logger.info(f"Sending close notification for {trade_id}...")
+                await channel.send(message)
+                logger.info(f"✓ Successfully sent close notification for {trade_id}")
+                return
+            
+            # Format the message for new orders or modifications
             symbol = order_info.get('symbol', 'UNKNOWN')
             order_type = order_info.get('type', 'UNKNOWN')
             price = order_info.get('price', 0.0)
             sl = order_info.get('sl', 0.0)
             tp = order_info.get('tp', 0.0)
+            trade_id = order_info.get('trade_id', f"ID#{order_info.get('ticket')}")
             
             # Check if this is a modification
             if order_info.get('is_modification', False):
                 changes = order_info.get('changes', [])
-                message = f"""🔄 ORDER MODIFIED - Ticket #{order_info.get('ticket')}
+                message = f"""🔄 ORDER MODIFIED - {trade_id}
 Pair: {symbol}
 Type: {order_type}
 Entry: {price}
@@ -96,7 +111,8 @@ Changes:
 Type: {order_type}
 Entry: {price}
 SL: {sl}
-TP: {tp}"""
+TP: {tp}
+Trade ID: {trade_id}"""
             
             logger.info(f"Sending message to channel {self.notification_channel_id}...")
             await channel.send(message)
@@ -161,7 +177,23 @@ Trading stopped for today. Great job! 💰"""
                 # Remove oldest entries (convert to list, remove first 100, convert back)
                 self.processed_messages = set(list(self.processed_messages)[100:])
             
-            # First, try to parse as order modification
+            # First, try to parse as close order
+            close_order = self.parser.parse_close(message.content)
+            
+            if close_order:
+                logger.info(f"✓ Close order detected: {close_order.trade_id}")
+                
+                # Call the close handler
+                if self.on_close:
+                    try:
+                        self.on_close(close_order)
+                    except Exception as e:
+                        logger.error(f"Error processing close order: {e}")
+                else:
+                    logger.warning("No close handler configured")
+                return
+            
+            # Second, try to parse as order modification
             modification = self.parser.parse_modification(message.content)
             
             if modification:
@@ -205,7 +237,7 @@ Trading stopped for today. Great job! 💰"""
                     except Exception as e:
                         logger.error(f"Error processing signal: {e}")
             else:
-                logger.warning("❌ Message is not a valid trading signal or modification")
+                logger.warning("❌ Message is not a valid trading signal, modification, or close order")
                 logger.debug(f"Failed to parse: {message.content}")
         except Exception as e:
             logger.error(f"Error handling message: {e}", exc_info=True)

@@ -2,9 +2,12 @@
 Discord Signal Parser - Extracts trading signals from Discord messages
 """
 import re
+import logging
 from dataclasses import dataclass
 from typing import Optional
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 class OrderType(Enum):
     BUY = "buy"
@@ -25,6 +28,7 @@ class TradingSignal:
     sl_pips: Optional[float] = None
     tp_pips: Optional[float] = None
     raw_message: str = ""
+    trade_id: Optional[str] = None  # Master's trade ID
 
 @dataclass
 class OrderModification:
@@ -35,6 +39,12 @@ class OrderModification:
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
     changes: list = None
+    trade_id: Optional[str] = None  # Master's trade ID
+
+@dataclass
+class OrderClose:
+    trade_id: str  # Master's trade ID (e.g., "ID#12345")
+    ticket: int  # Master's ticket number
 
 class SignalParser:
     """Parse trading signals from Discord messages"""
@@ -55,6 +65,39 @@ class SignalParser:
         "BNBUSD", "DOGEUSD", "MATICUSD", "AVAXUSD", "LINKUSD"
     ]
     
+    def parse_close(self, message: str) -> Optional[OrderClose]:
+        """Parse a close order message from Discord"""
+        try:
+            # Check if this is a close message
+            if "CLOSE ORDER" not in message.upper() and "🔴" not in message:
+                return None
+            
+            # Check for explicit CLOSE action
+            if "ACTION: CLOSE" not in message.upper() and "Action: CLOSE" not in message:
+                return None
+            
+            # Extract trade ID
+            trade_id_match = re.search(r'Trade ID:\s*(ID#\d+)', message, re.IGNORECASE)
+            if not trade_id_match:
+                # Try alternative format
+                trade_id_match = re.search(r'CLOSE ORDER\s*-\s*(ID#\d+)', message, re.IGNORECASE)
+            
+            if not trade_id_match:
+                return None
+            
+            trade_id = trade_id_match.group(1)
+            
+            # Extract ticket number from trade ID
+            ticket_match = re.search(r'ID#(\d+)', trade_id)
+            ticket = int(ticket_match.group(1)) if ticket_match else 0
+            
+            logger.info(f"Parsed close order: {trade_id}")
+            return OrderClose(trade_id=trade_id, ticket=ticket)
+            
+        except Exception as e:
+            logger.error(f"Error parsing close order: {e}")
+            return None
+    
     def parse_modification(self, message: str) -> Optional[OrderModification]:
         """Parse an order modification message from Discord"""
         try:
@@ -62,11 +105,18 @@ class SignalParser:
             if "ORDER MODIFIED" not in message.upper() and "🔄" not in message:
                 return None
             
-            # Extract ticket number
-            ticket_match = re.search(r'Ticket\s*#?(\d+)', message, re.IGNORECASE)
-            if not ticket_match:
-                return None
-            ticket = int(ticket_match.group(1))
+            # Extract trade ID (preferred method)
+            trade_id_match = re.search(r'ID#(\d+)', message, re.IGNORECASE)
+            trade_id = trade_id_match.group(0) if trade_id_match else None
+            ticket = int(trade_id_match.group(1)) if trade_id_match else None
+            
+            # Fallback: Extract ticket number if trade ID not found
+            if not ticket:
+                ticket_match = re.search(r'Ticket\s*#?(\d+)', message, re.IGNORECASE)
+                if not ticket_match:
+                    return None
+                ticket = int(ticket_match.group(1))
+                trade_id = f"ID#{ticket}"
             
             # Extract symbol
             symbol_match = re.search(r'Pair:\s*([A-Z0-9]+)', message, re.IGNORECASE)
@@ -103,16 +153,20 @@ class SignalParser:
                 entry_price=entry,
                 stop_loss=sl,
                 take_profit=tp,
-                changes=changes
+                changes=changes,
+                trade_id=trade_id
             )
         except Exception as e:
-            import logging
-            logging.error(f"Error parsing modification: {e}")
+            logger.error(f"Error parsing modification: {e}")
             return None
     
     def parse(self, message: str) -> Optional[TradingSignal]:
         """Parse a Discord message and extract trading signal"""
         message_upper = message.upper()
+        
+        # Extract trade ID if present
+        trade_id_match = re.search(r'TRADE ID:\s*(ID#\d+)', message, re.IGNORECASE)
+        trade_id = trade_id_match.group(1) if trade_id_match else None
         
         # Extract symbol
         symbol = self._extract_symbol(message_upper)
@@ -155,7 +209,8 @@ class SignalParser:
             timeframe=timeframe,
             sl_pips=sl_pips,
             tp_pips=tp_pips,
-            raw_message=message
+            raw_message=message,
+            trade_id=trade_id
         )
     
     def _extract_symbol(self, message: str) -> Optional[str]:

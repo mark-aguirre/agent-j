@@ -426,6 +426,60 @@ class MainWindow:
             # Create bot instance
             self.bot = TradingBot(self.config, mode=mode)
             
+            # Connect to MT5 first to get account info
+            if not self.bot.trader.connect():
+                messagebox.showerror("Error", "Failed to connect to MT5")
+                logging.error("Failed to connect to MT5. Exiting.")
+                return
+            
+            # Display startup configuration info
+            logging.info("=" * 50)
+            logging.info(f"{__app_name__} v{__version__}")
+            logging.info(f"Discord Trading Bot Started - {mode.upper()} MODE")
+            logging.info(f"Account Balance: ${self.bot.trader.get_balance():.2f}")
+            logging.info(f"Risk Mode: {self.config.risk_mode.value}")
+            
+            if self.config.risk_mode.value == "risk_percent":
+                logging.info(f"Risk Per Trade: {self.config.risk_percent}%")
+            elif self.config.risk_mode.value == "fixed_lot":
+                logging.info(f"Fixed Lot Size: {self.config.fixed_lot}")
+            elif self.config.risk_mode.value == "fixed_money":
+                logging.info(f"Fixed Money Risk: ${self.config.fixed_money_risk}")
+            
+            logging.info(f"Min Lot: {self.config.min_lot} | Max Lot: {self.config.max_lot}")
+            logging.info(f"Max Open Trades: {self.config.max_open_trades}")
+            logging.info(f"Max Daily Trades: {self.config.max_daily_trades}")
+            
+            logging.info(f"Break-Even: {'Enabled' if self.config.use_break_even else 'Disabled'} "
+                       f"(Activate: {self.config.break_even_at_pips} pips, Offset: {self.config.break_even_offset_pips} pips)")
+            logging.info(f"Trailing Stop: {'Enabled' if self.config.use_trailing_stop else 'Disabled'} "
+                       f"(Start: {self.config.trailing_start_pips} pips, Step: {self.config.trailing_step_pips} pips)")
+            logging.info(f"Daily Limits: {'Enabled' if self.config.use_daily_limits else 'Disabled'} "
+                       f"(Loss: {self.config.max_daily_loss_percent}%, Profit: {self.config.max_daily_profit_percent}%, Max Trades: {self.config.max_daily_trades})")
+            
+            # Spread limits
+            logging.info(f"Max Spread - Forex: {self.config.max_spread_forex} | Gold: {self.config.max_spread_gold} | "
+                       f"Indices: {self.config.max_spread_indices} | Crypto: {self.config.max_spread_crypto}")
+            
+            # Trading sessions
+            if self.config.enabled_sessions:
+                logging.info(f"Trading Sessions: {', '.join(self.config.enabled_sessions)}")
+            else:
+                logging.info("Trading Sessions: All sessions enabled (no filter)")
+            
+            if mode == "master":
+                logging.info("Mode: MASTER - Sending signals & managing positions")
+            else:
+                logging.info("Mode: CLIENT - Monitoring signals & creating orders")
+            
+            logging.info("=" * 50)
+            
+            # Disconnect MT5 temporarily (will reconnect in bot.run())
+            self.bot.trader.disconnect()
+            
+            # Refresh dashboard configuration display
+            self.dashboard_tab.refresh_config()
+            
             # Start bot in separate thread
             self.bot_thread = threading.Thread(target=self._run_bot, daemon=True)
             self.bot_thread.start()
@@ -443,7 +497,7 @@ class MainWindow:
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to start bot:\n{str(e)}")
-            logging.error(f"Failed to start bot: {e}")
+            logging.error(f"Failed to start bot: {e}", exc_info=True)
     
     def _stop_bot(self):
         """Stop the trading bot"""
