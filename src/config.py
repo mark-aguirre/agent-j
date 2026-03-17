@@ -83,6 +83,7 @@ class TradingConfig:
     
     # Break-Even
     use_break_even: bool = True
+    break_even_mode: str = "copy_master"  # "copy_master" or "custom"
     break_even_at_pips: float = 300.0
     break_even_offset_pips: float = 100.0
     
@@ -122,6 +123,7 @@ def load_config() -> TradingConfig:
             max_daily_loss_percent=safe_float(os.getenv("MAX_DAILY_LOSS_PERCENT", "3.0")),
             max_daily_profit_percent=safe_float(os.getenv("MAX_DAILY_PROFIT_PERCENT", "5.0")),
             use_break_even=safe_bool(os.getenv("USE_BREAK_EVEN", "true")),
+            break_even_mode=os.getenv("BREAK_EVEN_MODE", "copy_master"),
             break_even_at_pips=safe_float(os.getenv("BREAK_EVEN_AT_PIPS", "300.0")),
             break_even_offset_pips=safe_float(os.getenv("BREAK_EVEN_OFFSET_PIPS", "200.0")),
             use_trailing_stop=safe_bool(os.getenv("USE_TRAILING_STOP", "true")),

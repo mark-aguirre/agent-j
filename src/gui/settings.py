@@ -118,6 +118,10 @@ class SettingsTab:
         be_card = self._create_card(left_col, "Break-Even Settings")
         
         self.entries['use_break_even'] = self._add_checkbox_row(be_card, "Enabled", self.config.use_break_even)
+        self.entries['break_even_mode'] = self._add_radio_row(be_card, "Mode", 
+                                                               [("copy_master", "Copy Master"), 
+                                                                ("custom", "Custom")],
+                                                               self.config.break_even_mode)
         self.entries['break_even_at'] = self._add_editable_row(be_card, "Activate At (pips)", str(self.config.break_even_at_pips))
         self.entries['break_even_offset'] = self._add_editable_row(be_card, "Offset (pips)", str(self.config.break_even_offset_pips))
         
@@ -312,6 +316,34 @@ class SettingsTab:
         
         return var
     
+    def _add_radio_row(self, parent, label, options, value):
+        """Add a radio button row with multiple options"""
+        row = tk.Frame(parent, bg=self.main_window.bg_card)
+        row.pack(fill=tk.X, padx=8, pady=4)
+        
+        tk.Label(row, text=label, 
+                bg=self.main_window.bg_card, fg=self.main_window.text_secondary,
+                font=(self.main_window.font_family, 8), width=18, anchor=tk.W).pack(side=tk.LEFT)
+        
+        var = tk.StringVar(value=value)
+        
+        # Auto-save on change
+        def on_change():
+            self._auto_save()
+        
+        buttons_frame = tk.Frame(row, bg=self.main_window.bg_card)
+        buttons_frame.pack(side=tk.RIGHT, fill=tk.X, expand=True)
+        
+        for option_value, option_label in options:
+            tk.Radiobutton(buttons_frame, text=option_label, variable=var, value=option_value,
+                          bg=self.main_window.bg_card,
+                          activebackground=self.main_window.bg_card,
+                          selectcolor=self.main_window.bg_secondary,
+                          command=on_change,
+                          font=(self.main_window.font_family, 8)).pack(side=tk.LEFT, padx=(0, 12))
+        
+        return var
+    
     def _auto_save(self):
         """Auto-save settings when changed"""
         try:
@@ -338,6 +370,7 @@ class SettingsTab:
                 'MAX_DAILY_PROFIT_PERCENT': self.entries['max_daily_profit_percent'].get(),
                 'MAX_DAILY_TRADES': self.entries['max_daily_trades'].get(),
                 'USE_BREAK_EVEN': 'true' if self.entries['use_break_even'].get() else 'false',
+                'BREAK_EVEN_MODE': self.entries['break_even_mode'].get(),
                 'BREAK_EVEN_AT_PIPS': self.entries['break_even_at'].get(),
                 'BREAK_EVEN_OFFSET_PIPS': self.entries['break_even_offset'].get(),
                 'USE_TRAILING_STOP': 'true' if self.entries['use_trailing'].get() else 'false',
@@ -391,6 +424,7 @@ class SettingsTab:
             self.config.max_daily_profit_percent = float(self.entries['max_daily_profit_percent'].get()) if self.entries['max_daily_profit_percent'].get() else 5.0
             self.config.max_daily_trades = int(self.entries['max_daily_trades'].get()) if self.entries['max_daily_trades'].get() else 5
             self.config.use_break_even = self.entries['use_break_even'].get()
+            self.config.break_even_mode = self.entries['break_even_mode'].get()
             self.config.break_even_at_pips = float(self.entries['break_even_at'].get()) if self.entries['break_even_at'].get() else 10.0
             self.config.break_even_offset_pips = float(self.entries['break_even_offset'].get()) if self.entries['break_even_offset'].get() else 2.0
             self.config.use_trailing_stop = self.entries['use_trailing'].get()

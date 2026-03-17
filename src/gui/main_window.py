@@ -9,6 +9,7 @@ import logging
 import asyncio
 import hashlib
 import sys
+from pathlib import Path
 from dotenv import load_dotenv
 
 from src.__version__ import __version__, __app_name__
@@ -406,7 +407,12 @@ class MainWindow:
         """Start the trading bot"""
         try:
             # Reload .env file to get latest configuration
-            load_dotenv(override=True)
+            if getattr(sys, 'frozen', False):
+                env_path = Path(sys.executable).parent / ".env"
+            else:
+                env_path = Path(__file__).parent.parent.parent / ".env"
+            load_dotenv(dotenv_path=env_path, override=True)
+            logging.info(f"Loaded .env from: {env_path}")
             
             # Reload configuration from environment variables
             self.config = load_config()

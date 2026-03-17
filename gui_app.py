@@ -94,6 +94,12 @@ def check_and_install_dependencies():
         messagebox.showerror("Error", f"Error checking dependencies:\n{str(e)}")
         return False
 
+def get_env_path() -> Path:
+    """Get the .env file path relative to the executable or script"""
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).parent / ".env"
+    return Path(__file__).parent / ".env"
+
 def main():
     """Entry point for GUI application"""
     try:
@@ -102,7 +108,8 @@ def main():
             sys.exit(0)
         
         # Load environment variables
-        load_dotenv()
+        env_path = get_env_path()
+        load_dotenv(dotenv_path=env_path)
         
         # Load configuration
         config = load_config()

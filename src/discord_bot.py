@@ -183,14 +183,19 @@ Trading stopped for today. Great job! 💰"""
             if close_order:
                 logger.info(f"✓ Close order detected: {close_order.trade_id}")
                 
-                # Call the close handler
-                if self.on_close:
-                    try:
-                        self.on_close(close_order)
-                    except Exception as e:
-                        logger.error(f"Error processing close order: {e}")
+                # Check break-even mode
+                if self.config.break_even_mode == "copy_master":
+                    logger.info(f"Break-Even Mode: COPY MASTER - Processing close order")
+                    # Call the close handler
+                    if self.on_close:
+                        try:
+                            self.on_close(close_order)
+                        except Exception as e:
+                            logger.error(f"Error processing close order: {e}")
+                    else:
+                        logger.warning("No close handler configured")
                 else:
-                    logger.warning("No close handler configured")
+                    logger.info(f"Break-Even Mode: CUSTOM - Ignoring close order, using custom settings")
                 return
             
             # Second, try to parse as order modification
