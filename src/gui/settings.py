@@ -88,9 +88,18 @@ class SettingsTab:
                  borderwidth=0).pack(side=tk.RIGHT)
         
         # Risk Settings
-        risk_card = self._create_card(left_col, "Risk Settings")
+        self.risk_card = risk_card = self._create_card(left_col, "Risk Settings")
+        
+        # Risk Mode Selection
+        self.entries['risk_mode'] = self._add_radio_row(risk_card, "Risk Mode", 
+                                                        [("fixed_lot", "Fixed Lot"), 
+                                                         ("risk_percent", "Risk Percent"),
+                                                         ("fixed_money", "Fixed Money")],
+                                                        self.config.risk_mode.value)
         
         self.entries['risk_percent'] = self._add_editable_row(risk_card, "Risk Percent", str(self.config.risk_percent))
+        self.entries['fixed_lot'] = self._add_editable_row(risk_card, "Fixed Lot Size", str(self.config.fixed_lot))
+        self.entries['fixed_money_risk'] = self._add_editable_row(risk_card, "Fixed Money Risk ($)", str(self.config.fixed_money_risk))
         self.entries['min_lot'] = self._add_editable_row(risk_card, "Min Lot", str(self.config.min_lot))
         self.entries['max_lot'] = self._add_editable_row(risk_card, "Max Lot", str(self.config.max_lot))
         self.entries['max_open_trades'] = self._add_editable_row(risk_card, "Max Open Trades", str(self.config.max_open_trades))
@@ -113,6 +122,26 @@ class SettingsTab:
         info_label.pack(fill=tk.X, padx=8, pady=(0, 6))
         
         tk.Label(dl_card, text="", bg=self.main_window.bg_card).pack(pady=4)
+        
+        # Martingale Settings
+        martingale_card = self._create_card(left_col, "Martingale Lot Sizing")
+        
+        self.entries['use_martingale'] = self._add_checkbox_row(martingale_card, "Enabled", self.config.use_martingale)
+        self.entries['use_martingale'].trace_add('write', lambda *_: self._toggle_risk_for_martingale())
+        # Apply initial state
+        self.frame.after(100, self._toggle_risk_for_martingale)
+        self.entries['martingale_base_lot'] = self._add_editable_row(martingale_card, "Base Lot Size", str(self.config.martingale_base_lot))
+        self.entries['martingale_multiplier'] = self._add_editable_row(martingale_card, "Multiplier", str(self.config.martingale_multiplier))
+        self.entries['martingale_max_losses'] = self._add_editable_row(martingale_card, "Max Consecutive Losses", str(self.config.martingale_max_losses))
+        
+        # Add warning label
+        warning_label = tk.Label(martingale_card, 
+                               text="⚠️ Warning: Martingale can lead to significant losses during losing streaks",
+                               bg=self.main_window.bg_card, fg="#ff6b6b",
+                               font=(self.main_window.font_family, 7), justify=tk.LEFT)
+        warning_label.pack(fill=tk.X, padx=8, pady=(0, 6))
+        
+        tk.Label(martingale_card, text="", bg=self.main_window.bg_card).pack(pady=4)
         
         # Break-Even Settings
         be_card = self._create_card(left_col, "Break-Even Settings")
@@ -361,7 +390,10 @@ class SettingsTab:
             # Update config values
             updates = {
                 'MT5_PATH': self.entries['mt5_path'].get(),
+                'RISK_MODE': self.entries['risk_mode'].get(),
                 'RISK_PERCENT': self.entries['risk_percent'].get(),
+                'FIXED_LOT': self.entries['fixed_lot'].get(),
+                'FIXED_MONEY_RISK': self.entries['fixed_money_risk'].get(),
                 'MIN_LOT': self.entries['min_lot'].get(),
                 'MAX_LOT': self.entries['max_lot'].get(),
                 'MAX_OPEN_TRADES': self.entries['max_open_trades'].get(),
@@ -369,6 +401,10 @@ class SettingsTab:
                 'MAX_DAILY_LOSS_PERCENT': self.entries['max_daily_loss_percent'].get(),
                 'MAX_DAILY_PROFIT_PERCENT': self.entries['max_daily_profit_percent'].get(),
                 'MAX_DAILY_TRADES': self.entries['max_daily_trades'].get(),
+                'USE_MARTINGALE': 'true' if self.entries['use_martingale'].get() else 'false',
+                'MARTINGALE_BASE_LOT': self.entries['martingale_base_lot'].get(),
+                'MARTINGALE_MULTIPLIER': self.entries['martingale_multiplier'].get(),
+                'MARTINGALE_MAX_LOSSES': self.entries['martingale_max_losses'].get(),
                 'USE_BREAK_EVEN': 'true' if self.entries['use_break_even'].get() else 'false',
                 'BREAK_EVEN_MODE': self.entries['break_even_mode'].get(),
                 'BREAK_EVEN_AT_PIPS': self.entries['break_even_at'].get(),
@@ -415,7 +451,14 @@ class SettingsTab:
             self.config.discord_token = self.entries['discord_token'].get()
             self.config.discord_channel_id = int(self.entries['discord_channel'].get()) if self.entries['discord_channel'].get() else 0
             self.config.discord_notification_channel_id = int(self.entries['discord_notification'].get()) if self.entries['discord_notification'].get() else 0
+            
+            # Risk settings
+            from src.config import RiskMode
+            risk_mode_str = self.entries['risk_mode'].get()
+            self.config.risk_mode = RiskMode(risk_mode_str) if risk_mode_str else RiskMode.FIXED_LOT
             self.config.risk_percent = float(self.entries['risk_percent'].get()) if self.entries['risk_percent'].get() else 1.0
+            self.config.fixed_lot = float(self.entries['fixed_lot'].get()) if self.entries['fixed_lot'].get() else 0.1
+            self.config.fixed_money_risk = float(self.entries['fixed_money_risk'].get()) if self.entries['fixed_money_risk'].get() else 100.0
             self.config.min_lot = float(self.entries['min_lot'].get()) if self.entries['min_lot'].get() else 0.01
             self.config.max_lot = float(self.entries['max_lot'].get()) if self.entries['max_lot'].get() else 10.0
             self.config.max_open_trades = int(self.entries['max_open_trades'].get()) if self.entries['max_open_trades'].get() else 3
@@ -423,6 +466,10 @@ class SettingsTab:
             self.config.max_daily_loss_percent = float(self.entries['max_daily_loss_percent'].get()) if self.entries['max_daily_loss_percent'].get() else 3.0
             self.config.max_daily_profit_percent = float(self.entries['max_daily_profit_percent'].get()) if self.entries['max_daily_profit_percent'].get() else 5.0
             self.config.max_daily_trades = int(self.entries['max_daily_trades'].get()) if self.entries['max_daily_trades'].get() else 5
+            self.config.use_martingale = self.entries['use_martingale'].get()
+            self.config.martingale_base_lot = float(self.entries['martingale_base_lot'].get()) if self.entries['martingale_base_lot'].get() else 0.01
+            self.config.martingale_multiplier = float(self.entries['martingale_multiplier'].get()) if self.entries['martingale_multiplier'].get() else 2.0
+            self.config.martingale_max_losses = int(self.entries['martingale_max_losses'].get()) if self.entries['martingale_max_losses'].get() else 3
             self.config.use_break_even = self.entries['use_break_even'].get()
             self.config.break_even_mode = self.entries['break_even_mode'].get()
             self.config.break_even_at_pips = float(self.entries['break_even_at'].get()) if self.entries['break_even_at'].get() else 10.0
@@ -746,6 +793,13 @@ Note: Leave the path empty if MT5 is installed in the default location."""
         threading.Thread(target=animate_progress, daemon=True).start()
         threading.Thread(target=update_thread, daemon=True).start()
     
+    def _toggle_risk_for_martingale(self):
+        """Disable Risk Settings card when martingale is enabled, and vice versa"""
+        if self.entries.get('use_martingale') and self.entries['use_martingale'].get():
+            self._disable_widget(self.risk_card)
+        else:
+            self._enable_widget(self.risk_card)
+
     def _disable_widget(self, widget):
         """Recursively disable all widgets"""
         try:

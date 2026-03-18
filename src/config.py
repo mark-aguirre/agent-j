@@ -53,7 +53,7 @@ class TradingConfig:
     mt5_path: str = os.getenv("MT5_PATH", "C:\\Program Files\\MetaTrader 5 EXNESS\\terminal64.exe")
     
     # Risk Management
-    risk_mode: RiskMode = RiskMode.RISK_PERCENT
+    risk_mode: RiskMode = RiskMode.FIXED_LOT
     risk_percent: float = 1.0
     fixed_lot: float = 0.1
     fixed_money_risk: float = 100.0
@@ -87,6 +87,12 @@ class TradingConfig:
     break_even_at_pips: float = 300.0
     break_even_offset_pips: float = 100.0
     
+    # Martingale Lot Sizing
+    use_martingale: bool = False
+    martingale_base_lot: float = 0.01
+    martingale_multiplier: float = 2.0
+    martingale_max_losses: int = 3  # Max consecutive losses before reset
+    
     # Trading Sessions (Philippines Time UTC+8)
     enabled_sessions: list = None  # List of enabled session names
     
@@ -110,7 +116,10 @@ def load_config() -> TradingConfig:
             mt5_password=os.getenv("MT5_PASSWORD", ""),
             mt5_server=os.getenv("MT5_SERVER", ""),
             mt5_path=os.getenv("MT5_PATH", ""),
+            risk_mode=RiskMode(os.getenv("RISK_MODE", "fixed_lot")) if os.getenv("RISK_MODE") in ["fixed_lot", "risk_percent", "fixed_money"] else RiskMode.FIXED_LOT,
             risk_percent=safe_float(os.getenv("RISK_PERCENT", "1.0")),
+            fixed_lot=safe_float(os.getenv("FIXED_LOT", "0.1")),
+            fixed_money_risk=safe_float(os.getenv("FIXED_MONEY_RISK", "100.0")),
             min_lot=safe_float(os.getenv("MIN_LOT", "0.01")),
             max_lot=safe_float(os.getenv("MAX_LOT", "10.0")),
             max_open_trades=safe_int(os.getenv("MAX_OPEN_TRADES", "3")),
@@ -129,6 +138,10 @@ def load_config() -> TradingConfig:
             use_trailing_stop=safe_bool(os.getenv("USE_TRAILING_STOP", "true")),
             trailing_start_pips=safe_float(os.getenv("TRAILING_START_PIPS", "1000.0")),
             trailing_step_pips=safe_float(os.getenv("TRAILING_STEP_PIPS", "100.0")),
+            use_martingale=safe_bool(os.getenv("USE_MARTINGALE", "false")),
+            martingale_base_lot=safe_float(os.getenv("MARTINGALE_BASE_LOT", "0.01")),
+            martingale_multiplier=safe_float(os.getenv("MARTINGALE_MULTIPLIER", "2.0")),
+            martingale_max_losses=safe_int(os.getenv("MARTINGALE_MAX_LOSSES", "3")),
             enabled_sessions=enabled_sessions,
         )
     except Exception as e:

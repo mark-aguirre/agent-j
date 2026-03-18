@@ -192,9 +192,11 @@ class TradingBot:
         while self.running:
             try:
                 self.trader.manage_positions()
+                # Check for closed positions to update martingale state
+                self.trader._check_closed_positions()
             except Exception as e:
                 logger.error(f"Error in position manager: {e}")
-            await asyncio.sleep(1)  # Check every second
+            await asyncio.sleep(0.1)  # Check every 100ms
     
     async def order_monitor_loop(self):
         """Background loop to monitor for new MT5 orders and modifications, then send Discord notifications"""
@@ -227,7 +229,7 @@ class TradingBot:
                         
             except Exception as e:
                 logger.error(f"Error in order monitor: {e}", exc_info=True)
-            await asyncio.sleep(2)  # Check every 2 seconds
+            await asyncio.sleep(0.5)  # Check every 500ms
     
     async def daily_goal_monitor_loop(self):
         """Background loop to monitor daily profit limit and send notification when reached"""
@@ -273,6 +275,8 @@ class TradingBot:
                    f"(Start: {self.config.trailing_start_pips} pips, Step: {self.config.trailing_step_pips} pips)")
         logger.info(f"Daily Limits: {'Enabled' if self.config.use_daily_limits else 'Disabled'} "
                    f"(Loss: {self.config.max_daily_loss_percent}%, Profit: {self.config.max_daily_profit_percent}%, Max Trades: {self.config.max_daily_trades})")
+        logger.info(f"Martingale: {'Enabled' if self.config.use_martingale else 'Disabled'} "
+                   f"(Base Lot: {self.config.martingale_base_lot}, Multiplier: {self.config.martingale_multiplier}x, Max Losses: {self.config.martingale_max_losses})")
         
         if self.mode == "master":
             logger.info("Mode: MASTER - Sending signals & managing positions")

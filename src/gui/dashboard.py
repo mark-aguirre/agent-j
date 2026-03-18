@@ -42,13 +42,18 @@ class DashboardTab:
         
         # Open Positions
         open_card = self._create_card(stats_row, "Open Positions", "0", self.main_window.accent_orange)
-        open_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
+        open_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 4))
         self.open_label = open_card.winfo_children()[1]
         
         # Daily Trades
         trades_card = self._create_card(stats_row, "Daily Trades", "0", self.main_window.accent_blue)
-        trades_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0))
+        trades_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2)
         self.trades_label = trades_card.winfo_children()[1]
+        
+        # Martingale Status
+        martingale_card = self._create_card(stats_row, "Next Lot", "0.01", self.main_window.accent_blue)
+        martingale_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(4, 0))
+        self.martingale_label = martingale_card.winfo_children()[1]
         
         # Config section (will be populated dynamically)
         self.config_card = tk.Frame(container, bg=self.main_window.bg_card, relief=tk.FLAT)
@@ -88,6 +93,7 @@ class DashboardTab:
             ("Break-Even", f"{'✓' if config.use_break_even else '✗'} {config.break_even_at_pips}p / {config.break_even_offset_pips}p"),
             ("Trailing Stop", f"{'✓' if config.use_trailing_stop else '✗'} {config.trailing_start_pips}p / {config.trailing_step_pips}p"),
             ("Daily Limits", f"{'✓' if config.use_daily_limits else '✗'} -{config.max_daily_loss_percent}% / +{config.max_daily_profit_percent}%"),
+            ("Martingale", f"{'✓' if config.use_martingale else '✗'} {config.martingale_base_lot} x{config.martingale_multiplier} (max {config.martingale_max_losses})"),
         ])
         
         for label, value in config_items:
@@ -165,6 +171,28 @@ class DashboardTab:
                 
                 # Update daily trades
                 self.trades_label.config(text=str(bot.trader.daily_trade_count))
+                
+                # Update martingale status
+                if bot.trader.config.use_martingale:
+                    status = bot.trader.get_martingale_status()
+                    next_lot = status.get('next_lot_size', 0.01)
+                    losses = status.get('consecutive_losses', 0)
+                    
+                    if losses > 0:
+                        self.martingale_label.config(
+                            text=f"{next_lot} (L{losses})",
+                            foreground=self.main_window.accent_red
+                        )
+                    else:
+                        self.martingale_label.config(
+                            text=f"{next_lot}",
+                            foreground=self.main_window.accent_green
+                        )
+                else:
+                    self.martingale_label.config(
+                        text="Disabled",
+                        foreground=self.main_window.text_secondary
+                    )
         except Exception as e:
             pass
         

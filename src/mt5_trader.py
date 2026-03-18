@@ -39,7 +39,25 @@ class MT5Trader:
         self.daily_goal_notified = False  # Track if daily goal notification was sent
         self.trade_id_map = {}  # Map client ticket to master trade ID: {client_ticket: master_trade_id}
         self.trade_id_map_file = Path("trade_id_mapping.json")  # Persistent storage
+        
+        # Martingale tracking
+        self.martingale_state = {
+            'consecutive_losses': 0,
+            'current_lot_multiplier': 1.0,
+            'last_trade_result': None,  # 'profit' or 'loss'
+            'last_trade_ticket': None,
+            'last_trade_lot': None,  # Actual lot size of the last closed trade
+            'last_trade_profit': None  # Actual profit/loss of the last closed trade
+        }
+        self.martingale_file = Path("martingale_state.json")
+        self._processed_deals = set()  # Initialize before loading
+        
         self._load_trade_id_map()
+        self._load_martingale_state()
+        
+        # Sync martingale state with recent trades on startup
+        if self.config.use_martingale:
+            self._sync_martingale_with_recent_trades()
     
     def _load_trade_id_map(self):
         """Load trade ID mapping from file"""
@@ -61,6 +79,230 @@ class MT5Trader:
                 json.dump(self.trade_id_map, f, indent=2)
         except Exception as e:
             logger.error(f"Error saving trade ID map: {e}")
+    
+    def _load_martingale_state(self):
+        """Load martingale state from file"""
+        try:
+            if self.martingale_file.exists():
+                with open(self.martingale_file, 'r') as f:
+                    saved_state = json.load(f)
+                    self.martingale_state.update(saved_state)
+                    # Ensure new field exists for backwards compatibility
+                    if 'last_trade_lot' not in self.martingale_state:
+                        self.martingale_state['last_trade_lot'] = None
+                    # Load processed deals set
+                    self._processed_deals = set(saved_state.get('processed_deals', []))
+                    logger.info(f"Loaded martingale state: {self.martingale_state}")
+        except Exception as e:
+            logger.error(f"Error loading martingale state: {e}")
+            self._processed_deals = set()
+    
+    def _save_martingale_state(self):
+        """Save martingale state to file"""
+        try:
+            with open(self.martingale_file, 'w') as f:
+                json.dump(self.martingale_state, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving martingale state: {e}")
+    
+    def _update_martingale_state(self, ticket: int, profit: float, lot: float = None):
+        """Update martingale state based on trade result"""
+        if not self.config.use_martingale:
+            return
+        
+        try:
+            logger.debug(f"Updating martingale state for ticket {ticket}, profit: ${profit:.2f}, lot: {lot}")
+            
+            if profit > 0:
+                # Profit - reset to base lot
+                self.martingale_state['consecutive_losses'] = 0
+                self.martingale_state['current_lot_multiplier'] = 1.0
+                self.martingale_state['last_trade_result'] = 'profit'
+                self.martingale_state['last_trade_lot'] = lot
+                self.martingale_state['last_trade_profit'] = profit
+                logger.info(f"Martingale: Profit trade (${profit:.2f}), reset to base lot")
+            else:
+                # Loss - track consecutive losses and store actual lot used
+                self.martingale_state['consecutive_losses'] += 1
+                self.martingale_state['last_trade_result'] = 'loss'
+                self.martingale_state['last_trade_lot'] = lot
+                self.martingale_state['last_trade_profit'] = profit
+
+                if self.martingale_state['consecutive_losses'] >= self.config.martingale_max_losses:
+                    logger.warning(f"Martingale: Max consecutive losses ({self.config.martingale_max_losses}) reached, resetting")
+                    self.martingale_state['consecutive_losses'] = 0
+                    self.martingale_state['current_lot_multiplier'] = 1.0
+                    self.martingale_state['last_trade_lot'] = None  # next order uses base lot
+                    self.martingale_state['last_trade_profit'] = None
+                else:
+                    logger.info(f"Martingale: Loss #{self.martingale_state['consecutive_losses']} (${profit:.2f}), next lot = {lot} * {self.config.martingale_multiplier}")
+            
+            self.martingale_state['last_trade_ticket'] = ticket
+            self._save_martingale_state()
+            logger.info(f"Martingale state: {self.martingale_state}")
+            
+        except Exception as e:
+            logger.error(f"Error updating martingale state: {e}")
+    
+    def _get_martingale_lot_size(self, base_lot: float) -> float:
+        """Calculate lot size based on last closed trade result.
+        
+        Only active when use_martingale is True.
+        - Last trade was a loss: double its actual lot size
+        - Last trade was a profit, or no history, or max losses hit: use base lot
+        - Max 3 consecutive losses then reset to base lot
+        """
+        if not self.config.use_martingale:
+            return base_lot
+
+        last_result = self.martingale_state.get('last_trade_result')
+        last_lot = self.martingale_state.get('last_trade_lot')
+        consecutive_losses = self.martingale_state.get('consecutive_losses', 0)
+
+        if last_result == 'loss' and last_lot is not None and consecutive_losses > 0:
+            # Double the actual lot from the last closed trade
+            next_lot = last_lot * self.config.martingale_multiplier
+        else:
+            # Profit, reset, or first trade — use base lot
+            next_lot = self.config.martingale_base_lot
+
+        # Respect min/max limits
+        next_lot = max(next_lot, self.config.min_lot)
+        next_lot = min(next_lot, self.config.max_lot)
+
+        return round(next_lot, 2)
+    
+    def _check_closed_positions(self):
+        """Rebuild martingale state by replaying all closed positions from today."""
+        if not self.config.use_martingale:
+            return
+
+        try:
+            from_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            to_date = datetime.now()
+
+            deals = mt5.history_deals_get(from_date, to_date)
+            if not deals:
+                return
+
+            close_deals = [
+                d for d in deals
+                if (d.type in (mt5.DEAL_TYPE_SELL, mt5.DEAL_TYPE_BUY))
+                and d.entry == mt5.DEAL_ENTRY_OUT
+                and d.magic == self.config.magic_number
+            ]
+
+            if not close_deals:
+                return
+
+            close_deals.sort(key=lambda d: d.time)
+
+            # Rebuild state from scratch so stale persisted state can't cause issues
+            self.martingale_state = {
+                'consecutive_losses': 0,
+                'current_lot_multiplier': 1.0,
+                'last_trade_result': None,
+                'last_trade_ticket': None,
+                'last_trade_lot': None
+            }
+
+            for deal in close_deals:
+                result_type = "PROFIT" if deal.profit > 0 else "LOSS"
+                logger.info(f"Replaying closed position: Deal {deal.ticket}, "
+                            f"Position {deal.position_id}, Profit: ${deal.profit:.2f} ({result_type}), Lot: {deal.volume}")
+                self._update_martingale_state(deal.position_id, deal.profit, lot=deal.volume)
+
+            logger.info(f"Martingale state rebuilt: {self.martingale_state}")
+
+        except Exception as e:
+            logger.error(f"Error checking closed positions: {e}")
+    
+    def _sync_martingale_with_recent_trades(self):
+        """Sync martingale state with recent trades on startup"""
+        try:
+            # Only sync if we can connect to MT5
+            if not mt5.initialize():
+                logger.warning("Cannot sync martingale state - MT5 not available")
+                return
+            
+            # Get deals from today
+            from_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            to_date = datetime.now()
+            
+            deals = mt5.history_deals_get(from_date, to_date)
+            if not deals:
+                logger.info("No deals found today for martingale sync")
+                return
+            
+            # Find position close deals with our magic number
+            close_deals = []
+            for deal in deals:
+                if (deal.type == mt5.DEAL_TYPE_SELL or deal.type == mt5.DEAL_TYPE_BUY) and \
+                   deal.entry == mt5.DEAL_ENTRY_OUT and \
+                   deal.magic == self.config.magic_number:
+                    close_deals.append(deal)
+            
+            if not close_deals:
+                logger.info("No position close deals found today for martingale sync")
+                return
+            
+            # Sort by time
+            close_deals.sort(key=lambda d: d.time)
+            
+            # Reset martingale state before replaying
+            self.martingale_state = {
+                'consecutive_losses': 0,
+                'current_lot_multiplier': 1.0,
+                'last_trade_result': None,
+                'last_trade_ticket': None,
+                'last_trade_lot': None
+            }
+            
+            logger.info(f"Syncing martingale state with {len(close_deals)} closed positions")
+            
+            # Process all trades to establish current state
+            for deal in close_deals:
+                self._update_martingale_state(deal.position_id, deal.profit, lot=deal.volume)
+            
+            logger.info(f"Martingale state synced: {self.martingale_state}")
+                
+        except Exception as e:
+            logger.error(f"Error syncing martingale state: {e}")
+        finally:
+            # Don't shutdown MT5 here as it might be used elsewhere
+            pass
+    
+    def reset_martingale_state(self):
+        """Reset martingale state to initial values"""
+        if not self.config.use_martingale:
+            logger.warning("Martingale is not enabled")
+            return
+        
+        self.martingale_state = {
+            'consecutive_losses': 0,
+            'current_lot_multiplier': 1.0,
+            'last_trade_result': None,
+            'last_trade_ticket': None,
+            'last_trade_lot': None
+        }
+        self._save_martingale_state()
+        logger.info("Martingale state has been reset to initial values")
+    
+    def get_martingale_status(self) -> dict:
+        """Get current martingale status for monitoring"""
+        if not self.config.use_martingale:
+            return {"enabled": False}
+        
+        return {
+            "enabled": True,
+            "base_lot": self.config.martingale_base_lot,
+            "multiplier": self.config.martingale_multiplier,
+            "max_losses": self.config.martingale_max_losses,
+            "consecutive_losses": self.martingale_state['consecutive_losses'],
+            "current_multiplier": self.martingale_state['current_lot_multiplier'],
+            "last_result": self.martingale_state['last_trade_result'],
+            "next_lot_size": self._get_martingale_lot_size(self.config.martingale_base_lot)
+        }
     
     def connect(self) -> bool:
         """Initialize connection to MT5"""
@@ -172,6 +414,22 @@ class MT5Trader:
             symbol: Trading symbol
             sl_price_diff: Stop loss distance in price (e.g., 0.0025 for 25 pips on EURUSD, or 2584 for BTC)
         """
+        # Check if martingale is enabled first (works even without MT5 connection)
+        if self.config.use_martingale:
+            # Use martingale lot sizing
+            lot_size = self._get_martingale_lot_size(self.config.martingale_base_lot)
+            last_profit = self.martingale_state.get('last_trade_profit')
+            consecutive_losses = self.martingale_state.get('consecutive_losses', 0)
+            profit_display = f"{last_profit:.2f}" if last_profit is not None else self.martingale_state.get('last_trade_result')
+            logger.info(f"Martingale: Using lot {lot_size} (last_result={profit_display}, consecutive_losses={consecutive_losses})")
+            
+            # Apply basic limits using config values if MT5 not available
+            lot_size = max(lot_size, self.config.min_lot)
+            lot_size = min(lot_size, self.config.max_lot)
+            
+            return round(lot_size, 2)
+        
+        # For non-martingale, we need symbol info
         symbol_info = mt5.symbol_info(symbol)
         if not symbol_info:
             logger.error(f"Symbol {symbol} not found")
@@ -184,6 +442,7 @@ class MT5Trader:
         max_lot = symbol_info.volume_max
         lot_step = symbol_info.volume_step
         
+        # Use regular risk management
         lot_size = self.config.fixed_lot
         
         if self.config.risk_mode == RiskMode.FIXED_LOT:
@@ -340,6 +599,11 @@ class MT5Trader:
     def execute_signal(self, signal: TradingSignal) -> TradeResult:
         """Execute a trading signal"""
         try:
+            # Sync martingale state before calculating lot size so we always
+            # have the latest closed trade result, regardless of loop timing
+            if self.config.use_martingale:
+                self._check_closed_positions()
+
             # Create a hash of the signal to detect duplicates
             signal_hash = f"{signal.symbol}_{signal.order_type.value}_{signal.entry_price}_{signal.stop_loss}_{signal.take_profit}"
             
